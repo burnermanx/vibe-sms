@@ -1,0 +1,9 @@
+[package]
+name = "vibe-sms"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+minifb = "0.28.0"
+sdl2 = "0.38.0"
+z80 = "1.0.2"
