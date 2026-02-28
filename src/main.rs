@@ -153,7 +153,9 @@ fn main() {
                 };
                 
                 if trigger_irq {
-                    cpu.assert_irq(0xFF);
+                    cpu.assert_irq(0xFF); // RST 38h
+                } else {
+                    cpu.clr_irq(); // Limpa o pino para a CPU poder desenhar a próxima frame!
                 }
             }
         }
