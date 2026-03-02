@@ -88,25 +88,30 @@ impl Emulator {
                 self.cpu.io.bus.borrow_mut().vdp.v_counter = hw_vcounter as u8;
                 self.cpu.io.bus.borrow_mut().vdp.h_counter = 0x80; 
                 
+                if self.vcounter < 192 {
+                    self.cpu.io.bus.borrow_mut().vdp.render_scanline(self.vcounter as usize);
+                }
+                
                 if self.vcounter == 192 {
                     self.cpu.io.bus.borrow_mut().vdp.vblank_flag = true;
-                    self.cpu.io.bus.borrow_mut().vdp.render_frame();
                     frame_ready = true;
                 }
+            } // Fim do if cycles_accumulator
+            
+            // Re-avalia as interrupções do VDP a cada instrução do CPU
+            // Isso evita que o Z80 reentre na rotina de interrupção se o VDP já teve a flag limpa!
+            let trigger_irq = {
+                let vdp_core = &self.cpu.io.bus.borrow().vdp;
+                let vblank_irq_enabled = (vdp_core.registers[1] & 0x20) != 0;
+                let line_irq_enabled = (vdp_core.registers[0] & 0x10) != 0;
                 
-                let trigger_irq = {
-                    let vdp_core = &self.cpu.io.bus.borrow().vdp;
-                    let vblank_irq_enabled = (vdp_reg_1 & 0x20) != 0;
-                    let line_irq_enabled = (vdp_reg_0 & 0x10) != 0;
-                    
-                    (vdp_core.vblank_flag && vblank_irq_enabled) || (vdp_core.line_interrupt_flag && line_irq_enabled)
-                };
-                
-                if trigger_irq {
-                    self.cpu.assert_irq(0xFF); 
-                } else {
-                    self.cpu.clr_irq();
-                }
+                (vdp_core.vblank_flag && vblank_irq_enabled) || (vdp_core.line_interrupt_flag && line_irq_enabled)
+            };
+            
+            if trigger_irq {
+                self.cpu.assert_irq(0xFF); 
+            } else {
+                self.cpu.clr_irq();
             }
         }
         (frame_ready, audio_buffer)

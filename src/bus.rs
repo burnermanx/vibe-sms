@@ -29,47 +29,55 @@ impl Bus {
     // Leitura das portas de I/O ($00 - $FF)
     pub fn read_io(&mut self, port: u8) -> u8 {
         match port {
-            // Portas do VDP: $BE = Data, $BF = Control. $7E = VCounter, $7F = HCounter.
-            0xBE | 0xBD => self.vdp.read_data(),
-            0xBF => self.vdp.read_control(),
-            0x7E => self.vdp.read_vcounter(),
-            0x7F => self.vdp.read_hcounter(),
+            // Portas do VDP: 0x80 a 0xBF
+            0x80..=0xBF => {
+                if port % 2 == 0 {
+                    self.vdp.read_data()
+                } else {
+                    self.vdp.read_control()
+                }
+            },
+            // Contadores do VDP: 0x40 a 0x7F
+            0x40..=0x7F => {
+                if port % 2 == 0 {
+                    self.vdp.read_vcounter()
+                } else {
+                    self.vdp.read_hcounter()
+                }
+            },
             // Portas do controle/joypad (I/O do systema): $DC, $DD
             0xDC => self.joypad.read_port_dc(),
             0xDD => self.joypad.read_port_dd(),
             // Portas não mapeadas ou padrões
-            _ => {
-                // println!("Unmapped I/O Read: port {:02X}", port);
-                0xFF
-            },
+            _ => 0xFF,
         }
     }
 
     // Escrita nas portas de I/O ($00 - $FF)
     pub fn write_io(&mut self, port: u8, value: u8) {
         match port {
-            // VDP Data e Control Port ($BE e $BF, espelhados)
-            0xBE | 0xBD => self.vdp.write_data(value),
-            0xBF => self.vdp.write_control(value),
-            // Controle de memória do Sistema ($3E)
-            0x3E => {
-                // Bit 3 (0x08) = Cartridge RAM enable
-                // Bit 4 (0x10) = Cartridge ROM disable (BIOS enable)
-                // Bit 5 (0x20) = I/O Chip disable
-                // Bit 6 (0x40) = Work RAM disable
+            // VDP Data e Control Port (espelhados 0x80 a 0xBF)
+            0x80..=0xBF => {
+                if port % 2 == 0 {
+                    self.vdp.write_data(value)
+                } else {
+                    self.vdp.write_control(value)
+                }
             },
-            // Controle de I/O ($3F)
-            0x3F => {
-                // Nationalization, Port A/B control
+            // Audio PSG ($40 a $7F)
+            0x40..=0x7F => self.mixer.psg.write_data(value),
+            // Controle de memória do Sistema ($3E e $3F espelhados de 0x00..0x3F)
+            0x00..=0x3F => {
+                if port % 2 == 0 {
+                    // Bit 3 (0x08) = Cartridge RAM enable, etc (Memory Control)
+                } else {
+                    // Nationalization, Port A/B control (I/O Control)
+                }
             },
-            // Audio PSG ($7F)
-            0x7E | 0x7F => self.mixer.psg.write_data(value),
             // Audio FM ($F0 - $F2)
-            0xF0 | 0xF1 | 0xF2 => self.mixer.fm.write_data(port, value),
+            0xF0..=0xF2 => self.mixer.fm.write_data(port, value),
             // Portas não mapeadas
-            _ => {
-                // println!("Unmapped I/O Write: port {:02X}, val {:02X}", port, value);
-            }, 
+            _ => {}, 
         }
     }
 }
