@@ -3,8 +3,7 @@ const MAX_VOLUME: f32 = 0.2; // Keep overall volume in check
 pub struct Psg {
     // 4 canais: 3 Tone, 1 Noise
     pub registers: [u16; 8], 
-    pub counters: [u16; 4],
-    pub outputs: [i32; 4],
+    pub phases: [f32; 4],
     latch: u8,
     
     // Noise shift register (LFSR)
@@ -26,8 +25,7 @@ impl Psg {
                 0, 0x0F, // Ch 3 Tone/Vol
                 0, 0x0F, // Ch 4 Noise/Vol
             ],
-            counters: [0; 4],
-            outputs: [1, 1, 1, 1], // Inicia em High
+            phases: [0.0; 4],
             latch: 0,
             noise_lfsr: 0x8000,
         }
@@ -70,65 +68,73 @@ impl Psg {
 
     pub fn generate_sample(&mut self) -> f32 {
         let mut mixed = 0.0;
+        let master_clock = 3579545.0;
+        let sample_rate = 44100.0;
         
-        // At 3.58MHz, downsampling to 44100Hz implies jumping by ~81 cycles per sample
-        // Para simplificar no contexto do mixer cpal, esta função atuará por tick ou batch
-        // Aqui assumimos que chamamos isso 44100 vezes por seg, e fazemos os clocks internos 
-        // aproximaidamente baseados no clock master do SMS
-        
-        // A geração de tom inverte a saída do canal quando o contador decrementa para 0.
+        // Tone channels 0 to 2
         for i in 0..3 {
-            self.counters[i] = self.counters[i].saturating_sub(1);
-            if self.counters[i] == 0 {
-                self.counters[i] = self.registers[i * 2]; // Reload
-                // Freq 0 equals to 0x400 behavior-wise usually
-                if self.counters[i] == 0 {
-                    self.counters[i] = 0x400; 
-                }
-                self.outputs[i] *= -1;
+            let mut reg_val = self.registers[i * 2] as f32;
+            if reg_val == 0.0 {
+                reg_val = 1024.0;
             }
             
-            let volume = (15 - self.registers[i * 2 + 1]) as f32 / 15.0; // 0x0F é silencioso (0)
-            mixed += (self.outputs[i] as f32) * volume;
+            // Freq = Clock / (32 * Register)
+            let freq = master_clock / (32.0 * reg_val);
+            let phase_step = freq / sample_rate;
+            
+            self.phases[i] += phase_step;
+            if self.phases[i] >= 1.0 {
+                self.phases[i] -= 1.0;
+            }
+            
+            let output = if self.phases[i] < 0.5 { 1.0 } else { -1.0 };
+            let volume = (15.0 - self.registers[i * 2 + 1] as f32) / 15.0; 
+            
+            // Add to mix if freq is above a cutoff to avoid DC offset hum on low limits
+            if freq > 10.0 {
+                mixed += output * volume;
+            }
         }
         
-        // Canal de Noise
-        self.counters[3] = self.counters[3].saturating_sub(1);
-        if self.counters[3] == 0 {
-            let noise_ctrl = self.registers[6];
-            let shift_rate = noise_ctrl & 0x03;
+        // Noise channel 3
+        let noise_ctrl = self.registers[6];
+        let shift_rate = noise_ctrl & 0x03;
+        
+        let noise_shift_freq = match shift_rate {
+            0 => master_clock / 256.0,  // (16 * 16)
+            1 => master_clock / 512.0,  // (32 * 16)
+            2 => master_clock / 1024.0, // (64 * 16)
+            3 => {
+                let mut reg_val = self.registers[4] as f32; // Tone 3 register
+                if reg_val == 0.0 { reg_val = 1024.0; }
+                master_clock / (16.0 * reg_val) // Shifts at Tone 3 transition rate
+            },
+            _ => master_clock / 256.0,
+        };
+        
+        let noise_phase_step = noise_shift_freq / sample_rate;
+        self.phases[3] += noise_phase_step;
+        
+        while self.phases[3] >= 1.0 {
+            self.phases[3] -= 1.0;
             
-            self.counters[3] = match shift_rate {
-                0 => 0x10,
-                1 => 0x20,
-                2 => 0x40,
-                3 => self.registers[4], // Baseado no Tone 3
-                _ => 0x10,
+            let is_white_noise = (noise_ctrl & 0x04) != 0;
+            let tapped_bit = if is_white_noise {
+                // SMS PSGs tap bits 0 and 3
+                (self.noise_lfsr & 0x01) ^ ((self.noise_lfsr >> 3) & 0x01)
+            } else {
+                // Periodic noise taps bit 0 only
+                self.noise_lfsr & 0x01
             };
             
-            // Noise flip
-            self.outputs[3] *= -1;
-            
-            // Shift register operation (only on positive edge)
-            if self.outputs[3] == 1 {
-                let is_white_noise = (noise_ctrl & 0x04) != 0;
-                let tapped_bit = if is_white_noise {
-                    // Tap bits 0 and 3 para o SMS (SN76489)
-                    (self.noise_lfsr & 0x01) ^ ((self.noise_lfsr >> 3) & 0x01)
-                } else {
-                    self.noise_lfsr & 0x01
-                };
-                
-                self.noise_lfsr = (self.noise_lfsr >> 1) | (tapped_bit << 15);
-            }
+            self.noise_lfsr = (self.noise_lfsr >> 1) | (tapped_bit << 15);
         }
         
-        let noise_vol = (15 - self.registers[7]) as f32 / 15.0;
-        let lsb = (self.noise_lfsr & 0x01) as i32;
-        let noise_out = if lsb == 1 { 1.0 } else { -1.0 };
-        mixed += noise_out * noise_vol;
+        let noise_output = if (self.noise_lfsr & 0x01) == 1 { 1.0 } else { -1.0 };
+        let noise_vol = (15.0 - self.registers[7] as f32) / 15.0;
         
-        // Scale appropriately
+        mixed += noise_output * noise_vol;
+        
         (mixed / 4.0) * MAX_VOLUME
     }
 }

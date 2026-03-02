@@ -90,8 +90,8 @@ pub fn launch_frontend(rom_path: Option<String>) {
             eprintln!("No audio output device found.");
             None
         };
-        // Keep stream alive
-        let _stream_handle = Rc::new(RefCell::new(_stream));
+        // The stream must be kept alive for audio to play
+        let stream_keepalive = _stream;
         
         // Wrap emulator in a type that respects GTK / Rust lifetimes and mutability
         let emu: Rc<RefCell<Option<Emulator>>> = Rc::new(RefCell::new(None));
@@ -198,6 +198,9 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let audio_buffer_loop = audio_buffer.clone();
         
         glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+            // Keep the audio stream alive as long as the loop runs
+            let _keep = &stream_keepalive;
+            
             // Poll Gamepad events
             let mut gilrs_mut = gilrs_loop.borrow_mut();
             while let Some(Event { id, .. }) = gilrs_mut.next_event() {
@@ -232,9 +235,11 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 if let Ok(mut buf) = audio_buffer_loop.try_lock() {
                     buf.append(&mut audio_samples);
                     // Prevent unlimited growth if audio is lagging
-                    if buf.len() > 88200 { 
-                        let drain_count = buf.len() - 44100;
-                        buf.drain(0..drain_count); 
+                    // 8192 is the maximum we'll hold before forcing a drain.
+                    // Instead of dropping massive chunks, we just drop the exact overflow.
+                    if buf.len() > 8192 { 
+                        let excess = buf.len() - 8192;
+                        buf.drain(0..excess); 
                     }
                 }
                 
