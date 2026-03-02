@@ -23,8 +23,8 @@ impl Mmu {
             cart_ram: [0; 16384],
             ram_control: 0,
             rom_bank_0: 0,
-            rom_bank_1: 1, // Padrão: banco 1
-            rom_bank_2: 2, // Padrão: banco 2
+            rom_bank_1: 1, 
+            rom_bank_2: 2, 
         }
     }
 
@@ -35,13 +35,15 @@ impl Mmu {
                 self.rom[addr as usize]
             },
             0x0400..=0x3FFF => {
-                // Restante do Slot 0 ($0400-$3FFF) mapeado pelo rom_bank_0
-                let offset = (self.rom_bank_0 * 0x4000) + (addr as usize);
+                let rom_banks = (self.rom.len() / 0x4000).max(1);
+                let actual_bank = self.rom_bank_0 % rom_banks;
+                let offset = (actual_bank * 0x4000) + (addr as usize);
                 if offset < self.rom.len() { self.rom[offset] } else { 0xFF }
             },
             0x4000..=0x7FFF => {
-                // ROM Slot 1 ($4000-$7FFF) mapeado pelo rom_bank_1
-                let offset = (self.rom_bank_1 * 0x4000) + (addr as usize - 0x4000);
+                let rom_banks = (self.rom.len() / 0x4000).max(1);
+                let actual_bank = self.rom_bank_1 % rom_banks;
+                let offset = (actual_bank * 0x4000) + (addr as usize - 0x4000);
                 if offset < self.rom.len() { self.rom[offset] } else { 0xFF }
             },
             0x8000..=0xBFFF => {
@@ -54,7 +56,9 @@ impl Mmu {
                     self.cart_ram[offset]
                 } else {
                     // ROM no Slot 2 ($8000-$BFFF)
-                    let offset = (self.rom_bank_2 * 0x4000) + (addr as usize - 0x8000);
+                    let rom_banks = (self.rom.len() / 0x4000).max(1);
+                    let actual_bank = self.rom_bank_2 % rom_banks;
+                    let offset = (actual_bank * 0x4000) + (addr as usize - 0x8000);
                     if offset < self.rom.len() { self.rom[offset] } else { 0xFF }
                 }
             },
@@ -63,7 +67,7 @@ impl Mmu {
                 self.ram[(addr - 0xC000) as usize]
             },
             0xE000..=0xFFFF => {
-                // RAM Mirror e Registradores do Mapper
+                // RAM Mirror (aponta fisicamente para os mesmos 8KB para leitura)
                 self.ram[(addr - 0xE000) as usize]
             }
         }
@@ -84,10 +88,10 @@ impl Mmu {
                 self.ram[(addr - 0xC000) as usize] = value;
             },
             0xE000..=0xFFFF => {
-                // RAM Mirror
+                // RAM Mirror (aponta fisicamente para os mesmos 8KB para escrita)
                 self.ram[(addr - 0xE000) as usize] = value;
                 
-                // Mappers
+                // Mappers só recebem escritas, independentes da RAM física espelhada
                 match addr {
                     0xFFFC => self.ram_control = value,
                     0xFFFD => self.rom_bank_0 = value as usize,
