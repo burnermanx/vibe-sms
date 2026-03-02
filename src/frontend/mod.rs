@@ -52,7 +52,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let host = cpal::default_host();
         let _stream = if let Some(device) = host.default_output_device() {
             let config = device.default_output_config().unwrap();
-            let sample_rate = config.sample_rate().0 as f32; // Typically 44100 or 48000
+            let _sample_rate = config.sample_rate().0 as f32; // Typically 44100 or 48000
             
             // Start the audio stream
             let stream = device.build_output_stream(
@@ -106,6 +106,12 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 Some("Open"),
                 Some("Cancel"),
             );
+            
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Master System ROMs (*.sms, *.sg)"));
+            filter.add_pattern("*.sms");
+            filter.add_pattern("*.sg");
+            dialog.add_filter(&filter);
             
             let emu_inner_clone = emu_clone_for_open.clone();
             
@@ -228,7 +234,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 );
                 
                 // Run until a frame is ready
-                let (frame_ready, mut audio_samples) = emu_mut.step_frame(); // Expects our modified step_frame tuple (bool, Vec<f32>)
+                let (_frame_ready, mut audio_samples) = emu_mut.step_frame(); // Expects our modified step_frame tuple (bool, Vec<f32>)
                 let frame = emu_mut.get_framebuffer();
                 
                 // Send audio

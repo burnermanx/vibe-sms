@@ -60,8 +60,8 @@ impl Emulator {
             if self.cycles_accumulator >= cycles_per_line as i32 {
                 self.cycles_accumulator -= cycles_per_line as i32;
                 
-                let vdp_reg_0 = self.cpu.io.bus.borrow().vdp.registers[0];
-                let vdp_reg_1 = self.cpu.io.bus.borrow().vdp.registers[1];
+                let _vdp_reg_0 = self.cpu.io.bus.borrow().vdp.registers[0];
+                let _vdp_reg_1 = self.cpu.io.bus.borrow().vdp.registers[1];
                 let vdp_reg_10 = self.cpu.io.bus.borrow().vdp.registers[10];
                 
                 if self.vcounter <= 192 {
