@@ -1,18 +1,24 @@
+#[repr(C)]
+pub struct OPLL {
+    _private: [u8; 0],
+}
+
+#[link(name = "emu2413")]
+unsafe extern "C" {
+    pub fn OPLL_new(clk: u32, rate: u32) -> *mut OPLL;
+    pub fn OPLL_delete(opll: *mut OPLL);
+    pub fn OPLL_reset(opll: *mut OPLL);
+    pub fn OPLL_setRate(opll: *mut OPLL, rate: u32);
+    pub fn OPLL_setQuality(opll: *mut OPLL, q: u8);
+    pub fn OPLL_writeIO(opll: *mut OPLL, reg: u32, val: u8);
+    pub fn OPLL_writeReg(opll: *mut OPLL, reg: u32, val: u8);
+    pub fn OPLL_calc(opll: *mut OPLL) -> i16;
+}
+
 pub struct Fm {
-    pub registers: [u8; 0x40],
+    opll: *mut OPLL,
     address_latch: u8,
-    // Emulação completa do YM2413 (OPLL) é bastante complexa com 9 canais
-    // e moduladores de fase/envelope. 
-    // Para simplificar num primeiro passo, manteremos os registradores
-    // e geraremos uma aproximação de onda seno ou silêncio, para garantir
-    // a correta leitura/escrita pelo bus.
-    
-    // Contadores simplificados
-    counters: [u32; 9],
-    frequencies: [f32; 9],
-    volumes: [f32; 9],
-    key_on: [bool; 9],
-    instr: [u8; 9],
+    fm_enable: bool,
 }
 
 impl Default for Fm {
@@ -23,78 +29,70 @@ impl Default for Fm {
 
 impl Fm {
     pub fn new() -> Self {
-        Self {
-            registers: [0; 0x40],
-            address_latch: 0,
-            counters: [0; 9],
-            frequencies: [0.0; 9],
-            volumes: [0.0; 9],
-            key_on: [false; 9],
-            instr: [0; 9],
+        unsafe {
+            // Master System OPLL clock is typically 3.579545 MHz
+            // Sample rate we use is 44100
+            let opll = OPLL_new(3579545, 44100);
+            OPLL_reset(opll);
+            OPLL_setQuality(opll, 1); // 1 = good quality synthesis
+            
+            Self {
+                opll,
+                address_latch: 0,
+                fm_enable: false, // Games that support FM will write 1 to port $F2
+            }
         }
     }
 
     pub fn write_data(&mut self, port: u8, value: u8) {
         match port {
-            0xF0 => self.address_latch = value & 0x3F,
-            0xF1 | 0xF2 => {
-                let addr = self.address_latch as usize;
-                self.registers[addr] = value;
-                
-                // Decode registers
-                if addr >= 0x10 && addr <= 0x18 {
-                    // F-Number LSB
-                    self.update_channel(addr - 0x10);
-                } else if addr >= 0x20 && addr <= 0x28 {
-                    // Block / F-Number MSB / Key-On / Sustain
-                    self.update_channel(addr - 0x20);
-                } else if addr >= 0x30 && addr <= 0x38 {
-                    // Instrument / Volume
-                    let ch = addr - 0x30;
-                    self.instr[ch] = (value >> 4) & 0x0F;
-                    let vol = (value & 0x0F) as f32;
-                    self.volumes[ch] = (15.0 - vol) / 15.0; // 0 is loudest, 15 is silent
+            0xF0 => {
+                self.address_latch = value & 0x3F;
+            },
+            0xF1 => {
+                unsafe {
+                    OPLL_writeReg(self.opll, self.address_latch as u32, value);
                 }
+            },
+            0xF2 => {
+                self.fm_enable = (value & 0x01) != 0;
             },
             _ => {}
         }
     }
 
-    fn update_channel(&mut self, ch: usize) {
-        let f_num_lsb = self.registers[0x10 + ch] as u16;
-        let reg_20 = self.registers[0x20 + ch];
-        
-        let f_num_msb = (reg_20 & 0x01) as u16;
-        let block = (reg_20 >> 1) & 0x07;
-        self.key_on[ch] = (reg_20 & 0x10) != 0;
-        
-        let f_num = (f_num_msb << 8) | f_num_lsb;
-        
-        // Freq aproximada baseada no clock do OPLL (3.58MHz / 72)
-        // Freq = (49716 * f_num) / (2^19 / 2^block)
-        let f = (49716.0 * f_num as f32) / (524288.0 / (1 << block) as f32);
-        self.frequencies[ch] = f;
+    pub fn read_data(&self, port: u8) -> u8 {
+        match port {
+            0xF2 => self.fm_enable as u8,
+            // $F0 and $F1 typically return open bus ($FF) or internal status,
+            // but for simplicity and safety against hardware detection logic, we return 0xFF.
+            _ => 0xFF,
+        }
     }
 
     pub fn generate_sample(&mut self) -> f32 {
-        let mut mixed = 0.0;
-        let master_vol = 0.2;
-        let sample_rate = 44100.0;
-        
-        for ch in 0..9 {
-            if self.key_on[ch] && self.volumes[ch] > 0.0 {
-                // Muito grude wave approximation (sine)
-                let phase_step = (self.frequencies[ch] * 2.0 * std::f32::consts::PI) / sample_rate;
-                self.counters[ch] = self.counters[ch].wrapping_add(1);
-                
-                let phase = (self.counters[ch] as f32) * phase_step;
-                let sample = phase.sin();
-                
-                // Apply very basic volume
-                mixed += sample * self.volumes[ch];
-            }
+        if !self.fm_enable {
+            return 0.0;
         }
-        
-        (mixed / 9.0) * master_vol
+
+        unsafe {
+            let sample = OPLL_calc(self.opll);
+            // Convert i16 to f32 (-1.0 to 1.0)
+            (sample as f32) / 32768.0
+        }
     }
 }
+
+// Since we hold a raw pointer, we need to implement Drop to prevent memory leaks
+impl Drop for Fm {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.opll.is_null() {
+                OPLL_delete(self.opll);
+            }
+        }
+    }
+}
+
+// Ensure it can be moved across threads if necessary (assuming OPLL is thread sound)
+unsafe impl Send for Fm {}

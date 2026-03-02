@@ -48,6 +48,8 @@ impl Bus {
             // Portas do controle/joypad (I/O do systema): $DC, $DD
             0xDC => self.joypad.read_port_dc(),
             0xDD => self.joypad.read_port_dd(),
+            // FM Audio Control and Detection port ($F0 - $F2)
+            0xF0..=0xF2 => self.mixer.fm.read_data(port),
             // Portas não mapeadas ou padrões
             _ => 0xFF,
         }

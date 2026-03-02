@@ -17,3 +17,6 @@ gilrs = "0.11.0"
 gtk = { package = "gtk4", version = "0.9.1" }
 libadwaita = "0.7.0"
 glib = "0.20.0"
+
+[build-dependencies]
+cc = "1.0"
