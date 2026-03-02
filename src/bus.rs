@@ -4,6 +4,7 @@ pub struct Bus {
     pub mmu: crate::mmu::Mmu,
     pub vdp: crate::vdp::Vdp,
     pub joypad: crate::joypad::Joypad,
+    pub mixer: crate::audio::mixer::AudioMixer,
 }
 
 impl Bus {
@@ -12,6 +13,7 @@ impl Bus {
             mmu: crate::mmu::Mmu::new(rom),
             vdp: crate::vdp::Vdp::new(),
             joypad: crate::joypad::Joypad::new(),
+            mixer: crate::audio::mixer::AudioMixer::new(),
         }
     }
 
@@ -60,6 +62,10 @@ impl Bus {
             0x3F => {
                 // Nationalization, Port A/B control
             },
+            // Audio PSG ($7F)
+            0x7E | 0x7F => self.mixer.psg.write_data(value),
+            // Audio FM ($F0 - $F2)
+            0xF0 | 0xF1 | 0xF2 => self.mixer.fm.write_data(port, value),
             // Portas não mapeadas
             _ => {
                 // println!("Unmapped I/O Write: port {:02X}, val {:02X}", port, value);
