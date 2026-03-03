@@ -1,66 +1,110 @@
 # vibe-sms
 
-**vibe-sms** is a highly accurate and portable emulator for the Sega Master System (and equivalent Mark III hardware), built entirely from scratch in **Rust**. It features a modern, native graphical user interface for Linux developed using **GTK4** and **Libadwaita**, ensuring seamless integration, high performance, and a sleek design.
+**vibe-sms** is a highly accurate and portable emulator for the **Sega Master System** and **Sega Game Gear**, built entirely from scratch in **Rust**. It features a modern, native graphical user interface for Linux developed using **GTK4** and **Libadwaita**.
 
-This project was initiated from scratch using **Google Antigravity** powered by **Gemini 3.1 Pro**.
+This project was initiated from scratch using **Google Antigravity** powered by **Gemini**.
 
-## Main Features
+---
 
-* **CPU & Core Components**: Native `Z80` core emulation with a custom Memory Management Unit (MMU) and accurate Master System data bus mapping.
-* **Video (VDP)**: Graphics processor that renders backgrounds and sprites, generating precise Line and VBlank interrupts.
-* **Continuous Audio**:
-  * Emulation of the classic Western **PSG (SN76489)** sound chip using mathematically accurate continuous phase accumulators derived from the main SMS clock.
-  * Base module for the **FM Synthesizer (YM2413)** built-in for Japanese Master Systems and Mark III.
-  * Native audio backend written over `cpal` to guarantee extremely low latency synchronization.
-* **Input**: Full simultaneous support for:
-  * Keyboard (Numpad / Arrow keys) with action buttons 1 and 2 mapped to the Z and X keys.
-  * Gamepads / Joysticks natively supported on Linux through `gilrs`.
-* **Modern GUI (GTK)**: An isolated `frontend/` architecture built on Libadwaita standards, featuring native `FileChooserNative` window dialogs for a modern desktop experience.
+## Features
 
-## Requirements and Dependencies on Linux
+### 🎮 Platform Support
+- **Sega Master System** (Mark III / SMS1 / SMS2) — full support
+- **Sega Game Gear** — full support, including hardware-accurate color palette (CRAM), cropped 160×144 viewport, and Start button mapped to NMI
 
-The code integrates with the native GTK4 graphical library, which requires specific components to be present on your operating system. The emulator has been actively tested and validated on **Arch Linux**.
+ROMs are auto-detected by file extension (`.sms`, `.sg` → Master System; `.gg` → Game Gear).
 
-To install the build dependencies on Arch-based systems:
+### 🖥️ Video (VDP — TMS9918 / 315-5246)
+- Background tile rendering with scroll registers
+- Sprite rendering with per-line priority and flicker
+- Accurate Line interrupts and VBlank (INT) generation
+- Game Gear CRAM: 12-bit color (4096 colors) with hardware latch, cropped to the 160×144 GG display window
 
+### 🔊 Audio
+- **PSG (SN76489)** — all 3 tone channels + noise channel, with mathematically accurate phase accumulators clocked from the Z80 master clock. Noise LFSR matches the SMS tap bits for both white and periodic noise.
+- **FM Synthesizer (YM2413 / OPLL)** — hardware FM synthesis for Japanese Master System units with full 9-channel (melodic) + 5-channel (rhythm) support
+- **Game Gear Stereo Panning** — I/O port `$06` stereo control register, routing each of the 4 PSG channels independently to Left and Right outputs
+- Audio output via **`cpal`** with interleaved stereo (`[L, R, L, R, ...]`) using the actual device sample rate (44100Hz or 48000Hz) for accurate pitch
+
+### ⚡ Rendering & VSync
+- **VSync-locked rendering** via GTK4 `FrameClock` (`add_tick_callback`), synchronized with the Wayland/X11 compositor — zero screen tearing
+- **Time-debt accumulator**: emulation is paced to the SMS native ~59.922Hz independently of monitor refresh rate (60Hz, 75Hz, 144Hz, etc.), so games always run at the correct speed
+
+### 🕹️ Input
+- **Keyboard**: Arrow Keys / WASD for movement, `Z` and `X` for buttons 1 and 2, `Enter` for Game Gear Start
+- **Gamepad / Joystick**: native Linux support via `gilrs` — DPad, South/West for button 1, East/North for button 2, Start button
+- **Light Gun (Phaser)**: mouse click triggers the light gun, with coordinates scaled to the emulated screen space
+
+---
+
+## Requirements
+
+The emulator targets Linux and has been tested on **Arch Linux**. It requires GTK4 development libraries.
+
+### Arch Linux
 ```bash
 sudo pacman -S base-devel rustup gtk4 libadwaita
 ```
 
-*(Make sure your C build toolchain and Cargo are correctly installed, typically using a version manager like `rustup`).*
-
-For Ubuntu/Debian-based distributions, the equivalent command would be:
-
+### Ubuntu / Debian
 ```bash
 sudo apt install build-essential cargo rustc libgtk-4-dev libadwaita-1-dev
 ```
 
-## Building and Running
+---
 
-Clone the repository to your local machine, and then compile it directly using Cargo, the Rust package manager:
+## Building & Running
 
 ```bash
-# Build and Run in debug/development mode
-cargo run
+# Run in release mode (recommended for full performance)
+cargo run --release
 
-# Build for Release (highly recommended for maximum gameplay performance)
+# Or build and run separately
 cargo build --release
 ./target/release/vibe-sms
+
+# Pass a ROM directly as a CLI argument
+./target/release/vibe-sms path/to/game.sms
+./target/release/vibe-sms path/to/game.gg
 ```
 
-Alternatively, you can just execute `cargo run --release`.
+---
 
-## Usage (Playing Games)
+## Usage
 
-1. After compiling, the emulator will launch with its modern GTK/Libadwaita base window.
-2. Don't worry if the screen starts blank or black; it is simply awaiting commands.
-3. Click the **"Open ROM"** button situated in the Header Bar.
-4. Select standard `.sms` format files (direct ROM dumps of Sega Master System cartridges).
-5. The game will boot immediately once loaded!
-6. Use the **Arrow Keys** on your Keyboard or your **Gamepad's DPad** to move around. On modern controllers, the standard A/B buttons (or Cross/Circle on PlayStation controllers) will work seamlessly to simulate the original Sega *1* and *2* action buttons.
+1. Launch the emulator with `cargo run --release`
+2. Click **"Open ROM"** in the header bar
+3. Select a `.sms`, `.sg`, or `.gg` ROM file — the platform is detected automatically
+4. The game boots immediately
+5. Controls:
 
-## Development Notes & Architecture
+| Action | Keyboard | Gamepad |
+|---|---|---|
+| Move | Arrow Keys | D-Pad |
+| Button 1 | `Z` | South / West (A/X) |
+| Button 2 | `X` | East / North (B/Y) |
+| Start (GG) | `Enter` | Start |
+| Light Gun | Left Mouse Click | — |
 
-The project was refactored by decoupling the window/interface logic (`minifb`/`gtk`) to allow for a highly portable structure. In the future, Windows or macOS builds can consume the backend modules (`audio/`, `cpu/`, `mmu/`, and `vdp/`) without the overhead of the Linux GTK renderer.
+---
 
-Audio synchronization logic via `cpal` is dialed into a conservative buffer threshold (~20-90ms) to guarantee zero "clicks" or buffer underruns, maintaining smooth playback even during Wayland/X11 window compositor fluctuations.
+## Architecture
+
+```
+vibe-sms/
+├── src/
+│   ├── main.rs         # Entry point
+│   ├── core.rs         # Emulator loop (Z80 step, VDP, audio sync)
+│   ├── bus.rs          # Z80 I/O bus: routes memory, VDP, audio, joypad
+│   ├── mmu.rs          # Memory mapper (ROM paging, RAM)
+│   ├── vdp.rs          # Video Display Processor
+│   ├── joypad.rs       # Joypad + light gun state
+│   ├── audio/
+│   │   ├── psg.rs      # SN76489 PSG (tone + noise + GG stereo panning)
+│   │   ├── ym2413.rs   # YM2413 FM synthesizer (OPLL)
+│   │   └── mixer.rs    # Combines PSG + FM into stereo output
+│   └── frontend/
+│       └── mod.rs      # GTK4 UI, cpal audio stream, input handling
+```
+
+The backend (`audio/`, `mmu.rs`, `vdp.rs`, `core.rs`) is fully decoupled from the GTK frontend, making future ports to other platforms straightforward.
