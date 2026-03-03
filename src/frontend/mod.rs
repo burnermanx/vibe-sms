@@ -181,6 +181,41 @@ pub fn launch_frontend(rom_path: Option<String>) {
 
         window.add_controller(key_controller);
 
+        // Setup Mouse tracking for Light Phaser
+        let mouse_state = Rc::new(RefCell::new((false, 0u16, 0u16, 0u8))); // physical_active, x, y, frames_left_to_hold
+        
+        let motion_controller = gtk::EventControllerMotion::new();
+        let mouse_state_motion = mouse_state.clone();
+        motion_controller.connect_motion(move |_, x, y| {
+            let mut state = mouse_state_motion.borrow_mut();
+            // Scale x, y (from window dimensions to 256x192)
+            // Assuming the picture widget is stretched. We'll approximate:
+            // For now, we assume fixed 256x192 or use widget size
+            // To do this perfectly we need widget dimensions. Since we don't have it here directly,
+            // GTK x, y on the picture widget should be proportionally scaled.
+            // But we can extract widget width/height.
+            // For simplicity, let's treat x, y as directly hitting the 256x192 texture or scale it later.
+            // Actually, motion_controller gives coordinates relative to the widget it's attached to.
+            state.1 = x as u16;
+            state.2 = y as u16;
+        });
+        picture.add_controller(motion_controller);
+        
+        let click_controller = gtk::GestureClick::new();
+        let mouse_state_click = mouse_state.clone();
+        click_controller.connect_pressed(move |_, n_press, _, _| {
+            let mut state = mouse_state_click.borrow_mut();
+            state.0 = true;
+            state.3 = 6; // Guarantee at least 6 frames of trigger pull
+        });
+        
+        let mouse_state_release = mouse_state.clone();
+        click_controller.connect_released(move |_, n_press, _, _| {
+            let mut state = mouse_state_release.borrow_mut();
+            state.0 = false;
+        });
+        picture.add_controller(click_controller);
+
         // Setup Gilrs (Gamepad)
         let gilrs = Rc::new(RefCell::new(Gilrs::new().unwrap()));
         let gamepad_state = Rc::new(RefCell::new((false, false, false, false, false, false))); // U, D, L, R, B1, B2
@@ -202,6 +237,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let gamepad_state_loop = gamepad_state.clone();
         let gilrs_loop = gilrs.clone();
         let audio_buffer_loop = audio_buffer.clone();
+        let mouse_state_loop = mouse_state.clone();
         
         glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
             // Keep the audio stream alive as long as the loop runs
@@ -224,14 +260,64 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 // Combine input
                 let ks = key_state_loop.borrow();
                 let gs = gamepad_state_loop.borrow();
+                let ms = mouse_state_loop.borrow();
+                let mut trigger_active = ms.0;
+                if ms.3 > 0 {
+                    trigger_active = true;
+                    drop(ms);
+                    mouse_state_loop.borrow_mut().3 -= 1;
+                } else {
+                    drop(ms);
+                }
+                
                 emu_mut.set_input(
                     ks.0 || gs.0,
                     ks.1 || gs.1,
                     ks.2 || gs.2,
                     ks.3 || gs.3,
-                    ks.4 || gs.4, // Button 1
+                    ks.4 || gs.4 || trigger_active, // Button 1 is also triggered by mouse click
                     ks.5 || gs.5  // Button 2
                 );
+                
+                // Pass lightgun coordinates
+                // We need to scale from widget size to 256x192
+                let widget_w = picture_clone.width() as f64;
+                let widget_h = picture_clone.height() as f64;
+                
+                let mut scaled_x = 0;
+                let mut scaled_y = 0;
+                
+                if widget_w > 0.0 && widget_h > 0.0 {
+                    let aspect_ratio = 256.0 / 192.0;
+                    let widget_aspect = widget_w / widget_h;
+                    
+                    let (rendered_w, rendered_h, offset_x, offset_y) = if widget_aspect > aspect_ratio {
+                        // Letterboxed on left/right
+                        let h = widget_h;
+                        let w = h * aspect_ratio;
+                        (w, h, (widget_w - w) / 2.0, 0.0)
+                    } else {
+                        // Letterboxed on top/bottom
+                        let w = widget_w;
+                        let h = w / aspect_ratio;
+                        (w, h, 0.0, (widget_h - h) / 2.0)
+                    };
+                    
+                    let mx = mouse_state_loop.borrow().1 as f64;
+                    let my = mouse_state_loop.borrow().2 as f64;
+                    
+                    let rel_x = mx - offset_x;
+                    let rel_y = my - offset_y;
+                    
+                    if rel_x >= 0.0 && rel_x <= rendered_w {
+                        scaled_x = ((rel_x / rendered_w) * 256.0) as u16;
+                    }
+                    if rel_y >= 0.0 && rel_y <= rendered_h {
+                        scaled_y = ((rel_y / rendered_h) * 192.0) as u16;
+                    }
+                }
+                
+                emu_mut.set_lightgun(trigger_active, scaled_x.min(255), scaled_y.min(191));
                 
                 // Run until a frame is ready
                 let (_frame_ready, mut audio_samples) = emu_mut.step_frame(); // Expects our modified step_frame tuple (bool, Vec<f32>)

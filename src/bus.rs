@@ -74,6 +74,7 @@ impl Bus {
                     // Bit 3 (0x08) = Cartridge RAM enable, etc (Memory Control)
                 } else {
                     // Nationalization, Port A/B control (I/O Control)
+                    self.joypad.write_port_3f(value);
                 }
             },
             // Audio FM ($F0 - $F2)

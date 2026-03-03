@@ -24,6 +24,9 @@ pub struct Vdp {
     pub sprite_overflow: bool,
     pub v_counter: u8,
     pub h_counter: u8,
+    pub h_latched: bool,
+    pub latched_h_counter: u8,
+    pub latched_v_counter: u8,
 }
 
 impl Vdp {
@@ -44,7 +47,17 @@ impl Vdp {
             sprite_overflow: false,
             v_counter: 0,
             h_counter: 0,
+            h_latched: false,
+            latched_h_counter: 0,
+            latched_v_counter: 0,
         }
+    }
+
+    pub fn latch_h_v_counters(&mut self) {
+        // The real hardware always updates the latch when TH drops!
+        self.latched_h_counter = self.h_counter;
+        self.latched_v_counter = self.v_counter;
+        self.h_latched = true;
     }
 
     // Traduz dados da CRAM (formato SMS 6 bits bbggrr) para XRGB (32 bits)
@@ -235,8 +248,17 @@ impl Vdp {
         }
     }
 
-    pub fn read_vcounter(&self) -> u8 { self.v_counter }
-    pub fn read_hcounter(&self) -> u8 { self.h_counter }
+    pub fn read_vcounter(&mut self) -> u8 {
+        self.v_counter
+    }
+
+    pub fn read_hcounter(&mut self) -> u8 {
+        if self.h_latched {
+            self.latched_h_counter
+        } else {
+            self.h_counter
+        }
+    }
     
     // Leitura na porta DATA ($BE)
     pub fn read_data(&mut self) -> u8 {

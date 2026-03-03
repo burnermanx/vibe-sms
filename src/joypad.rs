@@ -5,6 +5,15 @@ pub struct Joypad {
     pub p1_right: bool,
     pub p1_b1: bool,
     pub p1_b2: bool,
+    
+    // Light Phaser
+    pub lightgun_active: bool,
+    pub mouse_x: u16,
+    pub mouse_y: u16,
+    pub th_pin_low: bool,
+    
+    // I/O Control
+    pub port_3f: u8,
 }
 
 impl Joypad {
@@ -12,6 +21,11 @@ impl Joypad {
         Self {
             p1_up: false, p1_down: false, p1_left: false, p1_right: false,
             p1_b1: false, p1_b2: false,
+            lightgun_active: false,
+            mouse_x: 0,
+            mouse_y: 0,
+            th_pin_low: false,
+            port_3f: 0xFF,
         }
     }
 
@@ -22,7 +36,10 @@ impl Joypad {
         if self.p1_down { port &= !0x02; }
         if self.p1_left { port &= !0x04; }
         if self.p1_right { port &= !0x08; }
+        
+        // The Light Phaser TRIGGER is physically wired to 'Button 1' (Bit 4)!
         if self.p1_b1 { port &= !0x10; }
+        
         if self.p1_b2 { port &= !0x20; }
         
         port
@@ -30,6 +47,15 @@ impl Joypad {
 
     // Porta DD ($DD) - Jogador 2 e outras funções
     pub fn read_port_dd(&self) -> u8 {
-        0xFF // Simplificado para jogar só com controle 1 inicialmente
+        let mut port = 0xFF; // Simplificado para jogar só com controle 1 inicialmente
+        if self.th_pin_low {
+            // Meka uses port &= !0x40; (Bit 6) for Player 1 TH.
+            port &= !0x40;
+        }
+        port
+    }
+
+    pub fn write_port_3f(&mut self, value: u8) {
+        self.port_3f = value;
     }
 }

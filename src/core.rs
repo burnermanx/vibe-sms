@@ -76,8 +76,10 @@ impl Emulator {
                 }
                 
                 self.vcounter += 1;
-                if (self.vcounter as i32) >= (lines_per_frame as i32) {
+                if self.vcounter >= 262 {
                     self.vcounter = 0;
+                    self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
+                    self.cpu.io.bus.borrow_mut().vdp.h_latched = false;
                 }
                 
                 let hw_vcounter = if self.vcounter <= 218 {
@@ -90,6 +92,36 @@ impl Emulator {
                 
                 if self.vcounter < 192 {
                     self.cpu.io.bus.borrow_mut().vdp.render_scanline(self.vcounter as usize);
+                    
+                    // Light Phaser Detection Simulation
+                    // The photodiode is ALWAYS active, independently of the trigger.
+                    let my = self.cpu.io.bus.borrow().joypad.mouse_y;
+                    
+                    // We check the exact row we just rendered!
+                    if self.vcounter as u16 == my {
+                        let mx = self.cpu.io.bus.borrow().joypad.mouse_x;
+                        
+                        let pixel = self.cpu.io.bus.borrow().vdp.frame_buffer[(my as usize) * 256 + (mx as usize)];
+                        let r = (pixel >> 16) & 0xFF;
+                        let g = (pixel >> 8) & 0xFF;
+                        let b = pixel & 0xFF;
+                        
+                        // Average brightness threshold (pure white flash is 765)
+                        if (r + g + b) >= 750 {
+                            if self.cpu.io.bus.borrow().joypad.lightgun_active {
+                                println!("LIGHT GUN HIT DETECTED! mx: {}, my: {}, color: {}", mx, my, r+g+b);
+                            }
+                            
+                            let phaser_h_counter = 16 + (mx >> 1);
+                            
+                            self.cpu.io.bus.borrow_mut().vdp.h_counter = phaser_h_counter as u8;
+                            self.cpu.io.bus.borrow_mut().vdp.latch_h_v_counters();
+                            self.cpu.io.bus.borrow_mut().joypad.th_pin_low = true; // Stay low until CPU reads it or Vblank!
+                        }
+                    } else if self.vcounter as u16 > my + 8 || self.vcounter < my {
+                        // Automatically release the TH switch right after 8 scanlines (creating a realistic physical sensor pulse).
+                        self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
+                    }
                 }
                 
                 if self.vcounter == 192 {
@@ -130,5 +162,12 @@ impl Emulator {
         bus.joypad.p1_right = right;
         bus.joypad.p1_b1 = b1;
         bus.joypad.p1_b2 = b2;
+    }
+
+    pub fn set_lightgun(&mut self, active: bool, x: u16, y: u16) {
+        let mut bus = self.cpu.io.bus.borrow_mut();
+        bus.joypad.lightgun_active = active;
+        bus.joypad.mouse_x = x;
+        bus.joypad.mouse_y = y;
     }
 }

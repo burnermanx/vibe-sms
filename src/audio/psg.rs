@@ -1,5 +1,11 @@
-const MAX_VOLUME: f32 = 0.2; // Keep overall volume in check
+const MAX_VOLUME: f32 = 0.25; // Adjusted mix volume to compete with FM chip
 
+const PSG_VOLUME_TABLE: [f32; 16] = [
+    1.000000, 0.794328, 0.630957, 0.501187,
+    0.398107, 0.316228, 0.251189, 0.199526,
+    0.158489, 0.125893, 0.100000, 0.079433,
+    0.063096, 0.050119, 0.039811, 0.000000, // 15 is off
+];
 pub struct Psg {
     // 4 canais: 3 Tone, 1 Noise
     pub registers: [u16; 8], 
@@ -88,7 +94,7 @@ impl Psg {
             }
             
             let output = if self.phases[i] < 0.5 { 1.0 } else { -1.0 };
-            let volume = (15.0 - self.registers[i * 2 + 1] as f32) / 15.0; 
+            let volume = PSG_VOLUME_TABLE[(self.registers[i * 2 + 1] & 0x0F) as usize];
             
             // Add to mix if freq is above a cutoff to avoid DC offset hum on low limits
             if freq > 10.0 {
@@ -131,10 +137,10 @@ impl Psg {
         }
         
         let noise_output = if (self.noise_lfsr & 0x01) == 1 { 1.0 } else { -1.0 };
-        let noise_vol = (15.0 - self.registers[7] as f32) / 15.0;
+        let noise_vol = PSG_VOLUME_TABLE[(self.registers[7] & 0x0F) as usize];
         
         mixed += noise_output * noise_vol;
         
-        (mixed / 4.0) * MAX_VOLUME
+        mixed * MAX_VOLUME
     }
 }
