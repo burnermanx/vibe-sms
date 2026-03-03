@@ -248,134 +248,143 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let audio_buffer_loop = audio_buffer.clone();
         let mouse_state_loop = mouse_state.clone();
         
-        glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-            // Keep the audio stream alive as long as the loop runs
+        // Time-debt accumulator for correct ~59.922Hz emulation speed
+        // We accumulate real elapsed µs and drain it in SMS frame chunks
+        let last_clock_us: Rc<std::cell::Cell<i64>> = Rc::new(std::cell::Cell::new(0));
+        let time_debt_us: Rc<std::cell::Cell<i64>> = Rc::new(std::cell::Cell::new(0));
+        let last_clock_cb = last_clock_us.clone();
+        let time_debt_cb = time_debt_us.clone();
+        // Cache last rendered frame to display between emulation ticks
+        let last_texture: Rc<RefCell<Option<gdk::MemoryTexture>>> = Rc::new(RefCell::new(None));
+        let last_texture_cb = last_texture.clone();
+        
+        picture_clone.add_tick_callback(move |widget, frame_clock| {
             let _keep = &stream_keepalive;
             
-            // Poll Gamepad events
-            let mut gilrs_mut = gilrs_loop.borrow_mut();
-            while let Some(Event { id, .. }) = gilrs_mut.next_event() {
-                let gamepad = gilrs_mut.gamepad(id);
-                let mut g_state = gamepad_state_loop.borrow_mut();
-                g_state.0 = gamepad.is_pressed(Button::DPadUp);
-                g_state.1 = gamepad.is_pressed(Button::DPadDown);
-                g_state.2 = gamepad.is_pressed(Button::DPadLeft);
-                g_state.3 = gamepad.is_pressed(Button::DPadRight);
-                g_state.4 = gamepad.is_pressed(Button::South) || gamepad.is_pressed(Button::West); // Cross / Square
-                g_state.5 = gamepad.is_pressed(Button::East) || gamepad.is_pressed(Button::North); // Circle / Triangle
-                g_state.6 = gamepad.is_pressed(Button::Start);
-            }
+            // SMS/GG runs at ~59.922750Hz = 16683µs per frame
+            const SMS_FRAME_US: i64 = 16683;
+            // Accumulate real elapsed time and drain in SMS frame chunks
+            let now = frame_clock.frame_time();
+            let prev = last_clock_cb.get();
+            let elapsed = if prev == 0 { SMS_FRAME_US } else { (now - prev).min(50_000) };
+            last_clock_cb.set(now);
+            let debt = time_debt_cb.get() + elapsed;
+            time_debt_cb.set(debt);
+            let should_emulate = debt >= SMS_FRAME_US;
             
-            if let Some(ref mut emu_mut) = *emu_clone.borrow_mut() {
-                // Combine input
-                let ks = key_state_loop.borrow();
-                let gs = gamepad_state_loop.borrow();
-                let ms = mouse_state_loop.borrow();
-                let mut trigger_active = ms.0;
-                if ms.3 > 0 {
-                    trigger_active = true;
-                    drop(ms);
-                    mouse_state_loop.borrow_mut().3 -= 1;
-                } else {
-                    drop(ms);
+            if should_emulate {
+                // Drain exactly one SMS frame's worth of debt (don't run ahead)
+                time_debt_cb.set((debt - SMS_FRAME_US).min(SMS_FRAME_US));
+                
+                // Poll Gamepad events
+                let mut gilrs_mut = gilrs_loop.borrow_mut();
+                while let Some(Event { id, .. }) = gilrs_mut.next_event() {
+                    let gamepad = gilrs_mut.gamepad(id);
+                    let mut g_state = gamepad_state_loop.borrow_mut();
+                    g_state.0 = gamepad.is_pressed(Button::DPadUp);
+                    g_state.1 = gamepad.is_pressed(Button::DPadDown);
+                    g_state.2 = gamepad.is_pressed(Button::DPadLeft);
+                    g_state.3 = gamepad.is_pressed(Button::DPadRight);
+                    g_state.4 = gamepad.is_pressed(Button::South) || gamepad.is_pressed(Button::West);
+                    g_state.5 = gamepad.is_pressed(Button::East) || gamepad.is_pressed(Button::North);
+                    g_state.6 = gamepad.is_pressed(Button::Start);
                 }
+                drop(gilrs_mut);
                 
-                emu_mut.set_input(
-                    ks.0 || gs.0,
-                    ks.1 || gs.1,
-                    ks.2 || gs.2,
-                    ks.3 || gs.3,
-                    ks.4 || gs.4 || trigger_active, // Button 1 is also triggered by mouse click
-                    ks.5 || gs.5, // Button 2
-                    ks.6 || gs.6  // Start / NMI
-                );
-                
-                // Pass lightgun coordinates
-                // We need to scale from widget size to 256x192
-                let widget_w = picture_clone.width() as f64;
-                let widget_h = picture_clone.height() as f64;
-                
-                let mut scaled_x = 0;
-                let mut scaled_y = 0;
-                
-                if widget_w > 0.0 && widget_h > 0.0 {
-                    let aspect_ratio = 256.0 / 192.0;
-                    let widget_aspect = widget_w / widget_h;
-                    
-                    let (rendered_w, rendered_h, offset_x, offset_y) = if widget_aspect > aspect_ratio {
-                        // Letterboxed on left/right
-                        let h = widget_h;
-                        let w = h * aspect_ratio;
-                        (w, h, (widget_w - w) / 2.0, 0.0)
+                if let Some(ref mut emu_mut) = *emu_clone.borrow_mut() {
+                    let ks = key_state_loop.borrow();
+                    let gs = gamepad_state_loop.borrow();
+                    let ms = mouse_state_loop.borrow();
+                    let mut trigger_active = ms.0;
+                    if ms.3 > 0 {
+                        trigger_active = true;
+                        drop(ms);
+                        mouse_state_loop.borrow_mut().3 -= 1;
                     } else {
-                        // Letterboxed on top/bottom
-                        let w = widget_w;
-                        let h = w / aspect_ratio;
-                        (w, h, 0.0, (widget_h - h) / 2.0)
+                        drop(ms);
+                    }
+                    
+                    emu_mut.set_input(
+                        ks.0 || gs.0,
+                        ks.1 || gs.1,
+                        ks.2 || gs.2,
+                        ks.3 || gs.3,
+                        ks.4 || gs.4 || trigger_active,
+                        ks.5 || gs.5,
+                        ks.6 || gs.6
+                    );
+                    
+                    // Scale mouse coordinates to emulator space (256x192)
+                    let widget_w = widget.width() as f64;
+                    let widget_h = widget.height() as f64;
+                    let mut scaled_x = 0u16;
+                    let mut scaled_y = 0u16;
+                    if widget_w > 0.0 && widget_h > 0.0 {
+                        let aspect_ratio = 256.0 / 192.0;
+                        let widget_aspect = widget_w / widget_h;
+                        let (rendered_w, rendered_h, ox, oy) = if widget_aspect > aspect_ratio {
+                            let h = widget_h; let w = h * aspect_ratio;
+                            (w, h, (widget_w - w) / 2.0, 0.0)
+                        } else {
+                            let w = widget_w; let h = w / aspect_ratio;
+                            (w, h, 0.0, (widget_h - h) / 2.0)
+                        };
+                        let mx = mouse_state_loop.borrow().1 as f64;
+                        let my = mouse_state_loop.borrow().2 as f64;
+                        let rel_x = mx - ox;
+                        let rel_y = my - oy;
+                        if rel_x >= 0.0 && rel_x <= rendered_w {
+                            scaled_x = ((rel_x / rendered_w) * 256.0) as u16;
+                        }
+                        if rel_y >= 0.0 && rel_y <= rendered_h {
+                            scaled_y = ((rel_y / rendered_h) * 192.0) as u16;
+                        }
+                    }
+                    emu_mut.set_lightgun(trigger_active, scaled_x.min(255), scaled_y.min(191));
+                    
+                    let (_frame_ready, mut audio_samples) = emu_mut.step_frame();
+                    let frame = emu_mut.get_framebuffer();
+                    
+                    // Send audio samples to cpal buffer
+                    if let Ok(mut buf) = audio_buffer_loop.try_lock() {
+                        buf.append(&mut audio_samples);
+                        if buf.len() > 8192 {
+                            let excess = buf.len() - 8192;
+                            buf.drain(0..excess);
+                        }
+                    }
+                    
+                    // Build RGBA texture for GTK
+                    let is_gg = emu_mut.is_gg;
+                    let (render_w, render_h, x_off, y_off): (usize, usize, usize, usize) = if is_gg {
+                        (160, 144, 48, 24)
+                    } else {
+                        (256, 192, 0, 0)
                     };
-                    
-                    let mx = mouse_state_loop.borrow().1 as f64;
-                    let my = mouse_state_loop.borrow().2 as f64;
-                    
-                    let rel_x = mx - offset_x;
-                    let rel_y = my - offset_y;
-                    
-                    if rel_x >= 0.0 && rel_x <= rendered_w {
-                        scaled_x = ((rel_x / rendered_w) * 256.0) as u16;
+                    let mut bytes: Vec<u8> = Vec::with_capacity(render_w * render_h * 4);
+                    for y in 0..render_h {
+                        for x in 0..render_w {
+                            let pixel = frame[(y + y_off) * 256 + (x + x_off)];
+                            bytes.push(((pixel >> 16) & 0xFF) as u8);
+                            bytes.push(((pixel >> 8) & 0xFF) as u8);
+                            bytes.push((pixel & 0xFF) as u8);
+                            bytes.push(((pixel >> 24) & 0xFF) as u8);
+                        }
                     }
-                    if rel_y >= 0.0 && rel_y <= rendered_h {
-                        scaled_y = ((rel_y / rendered_h) * 192.0) as u16;
-                    }
+                    let bytes = glib::Bytes::from(&bytes);
+                    let texture = gdk::MemoryTexture::new(
+                        render_w as i32, render_h as i32,
+                        gdk::MemoryFormat::R8g8b8a8,
+                        &bytes, render_w * 4,
+                    );
+                    // Cache texture for idle VSync frames
+                    *last_texture_cb.borrow_mut() = Some(texture);
                 }
-                
-                emu_mut.set_lightgun(trigger_active, scaled_x.min(255), scaled_y.min(191));
-                
-                // Run until a frame is ready
-                let (_frame_ready, mut audio_samples) = emu_mut.step_frame(); // Expects our modified step_frame tuple (bool, Vec<f32>)
-                let frame = emu_mut.get_framebuffer();
-                
-                // Send audio
-                if let Ok(mut buf) = audio_buffer_loop.try_lock() {
-                    buf.append(&mut audio_samples);
-                    // Prevent unlimited growth if audio is lagging
-                    // 8192 is the maximum we'll hold before forcing a drain.
-                    // Instead of dropping massive chunks, we just drop the exact overflow.
-                    if buf.len() > 8192 { 
-                        let excess = buf.len() - 8192;
-                        buf.drain(0..excess); 
-                    }
-                }
-                
-                let is_gg = emu_mut.is_gg;
-                let (render_w, render_h, offset_x, offset_y) = if is_gg {
-                    (160, 144, 48, 24)
-                } else {
-                    (256, 192, 0, 0)
-                };
-                
-                // Convert [u32] ARGB from minifb style to RGBA for GTK/GDK
-                let mut bytes: Vec<u8> = Vec::with_capacity(render_w * render_h * 4);
-                for y in 0..render_h {
-                    for x in 0..render_w {
-                        let pixel = frame[(y + offset_y) * 256 + (x + offset_x)];
-                        bytes.push(((pixel >> 16) & 0xFF) as u8); // R
-                        bytes.push(((pixel >> 8) & 0xFF) as u8);  // G
-                        bytes.push((pixel & 0xFF) as u8);         // B
-                        bytes.push(((pixel >> 24) & 0xFF) as u8); // A
-                    }
-                }
-                
-                let bytes = glib::Bytes::from(&bytes);
-                
-                let texture = gdk::MemoryTexture::new(
-                    render_w as i32,
-                    render_h as i32,
-                    gdk::MemoryFormat::R8g8b8a8,
-                    &bytes,
-                    render_w as usize * 4,
-                );
-                
-                picture_clone.set_paintable(Some(&texture));
+            } // end if should_emulate
+            
+            // Always present last cached frame on every VSync tick (no tearing)
+            if let Some(ref tex) = *last_texture_cb.borrow() {
+                widget.set_paintable(Some(tex));
             }
             
             glib::ControlFlow::Continue
@@ -386,3 +395,4 @@ pub fn launch_frontend(rom_path: Option<String>) {
 
     app.run();
 }
+
