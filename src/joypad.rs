@@ -5,6 +5,7 @@ pub struct Joypad {
     pub p1_right: bool,
     pub p1_b1: bool,
     pub p1_b2: bool,
+    pub gg_start: bool,
     
     // Light Phaser
     pub lightgun_active: bool,
@@ -14,18 +15,20 @@ pub struct Joypad {
     
     // I/O Control
     pub port_3f: u8,
+    pub is_gg: bool,
 }
 
 impl Joypad {
-    pub fn new() -> Self {
+    pub fn new(is_gg: bool) -> Self {
         Self {
             p1_up: false, p1_down: false, p1_left: false, p1_right: false,
-            p1_b1: false, p1_b2: false,
+            p1_b1: false, p1_b2: false, gg_start: false,
             lightgun_active: false,
             mouse_x: 0,
             mouse_y: 0,
             th_pin_low: false,
             port_3f: 0xFF,
+            is_gg,
         }
     }
 
@@ -57,5 +60,13 @@ impl Joypad {
 
     pub fn write_port_3f(&mut self, value: u8) {
         self.port_3f = value;
+    }
+
+    pub fn read_port_00(&self) -> u8 {
+        let mut port = 0x7F; // Bit 7 is Start Button (Active low)
+        if !self.gg_start {
+            port |= 0x80;
+        }
+        port
     }
 }

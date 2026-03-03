@@ -7,7 +7,7 @@ enum VdpMode {
 
 pub struct Vdp {
     pub vram: [u8; 16384], // 16KB VRAM
-    pub cram: [u8; 32],    // 32 Bytes CRAM (Paleta de cores)
+    pub cram: [u8; 64],    // 64 Bytes CRAM (Game Gear demands 64)
     pub registers: [u8; 16], // Registradores do VDP (0-10 no SMS)
     
     pub frame_buffer: [u32; 256 * 192], // Pixels finais a serem desenhados na janela
@@ -27,13 +27,15 @@ pub struct Vdp {
     pub h_latched: bool,
     pub latched_h_counter: u8,
     pub latched_v_counter: u8,
+    pub is_gg: bool,
+    pub cram_latch: u8,
 }
 
 impl Vdp {
-    pub fn new() -> Self {
+    pub fn new(is_gg: bool) -> Self {
         Self {
             vram: [0; 16384],
-            cram: [0; 32],
+            cram: [0; 64],
             registers: [0; 16],
             frame_buffer: [0xFF000000; 256 * 192],
             control_word: 0,
@@ -50,6 +52,8 @@ impl Vdp {
             h_latched: false,
             latched_h_counter: 0,
             latched_v_counter: 0,
+            is_gg,
+            cram_latch: 0,
         }
     }
 
@@ -60,14 +64,26 @@ impl Vdp {
         self.h_latched = true;
     }
 
-    // Traduz dados da CRAM (formato SMS 6 bits bbggrr) para XRGB (32 bits)
     fn get_color(&self, cram_address: usize) -> u32 {
-// ... mantido o código anterior para espaço visual ...
-        let color_byte = self.cram[cram_address & 0x1F];
-        let r = (color_byte & 0x03) * 85;
-        let g = ((color_byte >> 2) & 0x03) * 85;
-        let b = ((color_byte >> 4) & 0x03) * 85;
-        0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+        if self.is_gg {
+            // Game Gear Palette: 12-bit xxxxbbbbggggrrrr (Words at even addresses)
+            let base_addr = (cram_address & 0x1F) * 2;
+            let lo = self.cram[base_addr] as u16;
+            let hi = self.cram[base_addr + 1] as u16;
+            let color = lo | (hi << 8);
+            
+            let r = (color & 0x0F) * 17;
+            let g = ((color >> 4) & 0x0F) * 17;
+            let b = ((color >> 8) & 0x0F) * 17;
+            0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+        } else {
+            // Master System Palette: 6-bit ..bbggrr
+            let color_byte = self.cram[cram_address & 0x1F];
+            let r = (color_byte & 0x03) * 85;
+            let g = ((color_byte >> 2) & 0x03) * 85;
+            let b = ((color_byte >> 4) & 0x03) * 85;
+            0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+        }
     }
 
     pub fn render_scanline(&mut self, screen_y: usize) {
@@ -280,8 +296,18 @@ impl Vdp {
                 self.read_buffer = value; // Atualiza o read buffer (SMS behavior)
             },
             VdpMode::CramWrite => {
-                let cram_addr = (self.address_register & 0x1F) as usize;
-                self.cram[cram_addr] = value;
+                let addr = (self.address_register & 0x3F) as usize;
+                if self.is_gg {
+                    if addr % 2 == 0 {
+                        self.cram_latch = value;
+                    } else {
+                        self.cram[addr - 1] = self.cram_latch;
+                        self.cram[addr] = value;
+                    }
+                } else {
+                    let addr_sms = (self.address_register & 0x1F) as usize;
+                    self.cram[addr_sms] = value;
+                }
             }
         }
         self.address_register = (self.address_register + 1) & 0x3FFF; // Auto-increment

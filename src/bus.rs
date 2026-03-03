@@ -5,15 +5,17 @@ pub struct Bus {
     pub vdp: crate::vdp::Vdp,
     pub joypad: crate::joypad::Joypad,
     pub mixer: crate::audio::mixer::AudioMixer,
+    pub is_gg: bool,
 }
 
 impl Bus {
-    pub fn new(rom: Vec<u8>) -> Self {
+    pub fn new(rom: Vec<u8>, is_gg: bool, sample_rate: f32) -> Self {
         Self {
             mmu: crate::mmu::Mmu::new(rom),
-            vdp: crate::vdp::Vdp::new(),
-            joypad: crate::joypad::Joypad::new(),
-            mixer: crate::audio::mixer::AudioMixer::new(),
+            vdp: crate::vdp::Vdp::new(is_gg),
+            joypad: crate::joypad::Joypad::new(is_gg),
+            mixer: crate::audio::mixer::AudioMixer::new(is_gg, sample_rate),
+            is_gg,
         }
     }
 
@@ -45,6 +47,8 @@ impl Bus {
                     self.vdp.read_hcounter()
                 }
             },
+            // Game Gear Start button and I/O ports
+            0x00 => if self.is_gg { self.joypad.read_port_00() } else { 0xFF },
             // Portas do controle/joypad (I/O do systema): $DC, $DD
             0xDC => self.joypad.read_port_dc(),
             0xDD => self.joypad.read_port_dd(),
@@ -64,6 +68,12 @@ impl Bus {
                     self.vdp.write_data(value)
                 } else {
                     self.vdp.write_control(value)
+                }
+            },
+            // Game Gear Stereo Panning (Port 0x06)
+            0x06 => {
+                if self.is_gg {
+                    self.mixer.psg.write_stereo(value);
                 }
             },
             // Audio PSG ($40 a $7F)
@@ -87,12 +97,14 @@ impl Bus {
 
 pub struct System {
     pub bus: std::cell::RefCell<Bus>,
+    pub is_gg: bool,
 }
 
 impl System {
-    pub fn new(bus: Bus) -> Self {
+    pub fn new(bus: Bus, is_gg: bool) -> Self {
         Self {
             bus: std::cell::RefCell::new(bus),
+            is_gg,
         }
     }
 }

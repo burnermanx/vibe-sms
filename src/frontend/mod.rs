@@ -49,30 +49,29 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let audio_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(4096)));
         let audio_buffer_clone_for_stream = audio_buffer.clone();
         
+        // Sample rate shared across closures
+        let audio_sample_rate_rc = Rc::new(std::cell::Cell::new(44100.0f32));
+        
         let host = cpal::default_host();
         let _stream = if let Some(device) = host.default_output_device() {
             let config = device.default_output_config().unwrap();
-            let _sample_rate = config.sample_rate().0 as f32; // Typically 44100 or 48000
+            let device_sample_rate = config.sample_rate().0 as f32;
+            audio_sample_rate_rc.set(device_sample_rate);
             
             // Start the audio stream
             let stream = device.build_output_stream(
                 &config.into(),
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let mut buf = audio_buffer_clone_for_stream.lock().unwrap();
-                    let channels = 2; // Usually stereo output
-                    
                     let mut src_idx = 0;
-                    for frame in data.chunks_mut(channels) {
-                        let sample = if src_idx < buf.len() {
-                            buf[src_idx]
+                    for out_sample in data.iter_mut() {
+                        *out_sample = if src_idx < buf.len() {
+                            let s = buf[src_idx];
+                            src_idx += 1;
+                            s
                         } else {
                             0.0
                         };
-                        
-                        for out_sample in frame.iter_mut() {
-                            *out_sample = sample;
-                        }
-                        src_idx += 1;
                     }
                     if src_idx < buf.len() {
                         buf.drain(0..src_idx);
@@ -97,6 +96,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
         let emu: Rc<RefCell<Option<Emulator>>> = Rc::new(RefCell::new(None));
         
         let emu_clone_for_open = emu.clone();
+        let sample_rate_for_open = audio_sample_rate_rc.clone();
         let window_clone = window.clone();
         open_button.connect_clicked(move |_| {
             let dialog = gtk::FileChooserNative::new(
@@ -108,12 +108,14 @@ pub fn launch_frontend(rom_path: Option<String>) {
             );
             
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Master System ROMs (*.sms, *.sg)"));
+            filter.set_name(Some("Sega 8-bit ROMs (*.sms, *.sg, *.gg)"));
             filter.add_pattern("*.sms");
             filter.add_pattern("*.sg");
+            filter.add_pattern("*.gg");
             dialog.add_filter(&filter);
             
             let emu_inner_clone = emu_clone_for_open.clone();
+            let sample_rate_for_dialog = sample_rate_for_open.get();
             
             dialog.connect_response(move |d, response| {
                 if response == gtk::ResponseType::Accept {
@@ -121,8 +123,9 @@ pub fn launch_frontend(rom_path: Option<String>) {
                         if let Some(path) = file.path() {
                             match std::fs::read(&path) {
                                 Ok(rom_data) => {
-                                    *emu_inner_clone.borrow_mut() = Some(Emulator::new(rom_data));
-                                    println!("Loaded ROM!");
+                                    let is_gg = path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("gg")).unwrap_or(false);
+                                    *emu_inner_clone.borrow_mut() = Some(Emulator::new(rom_data, is_gg, sample_rate_for_dialog));
+                                    println!("Loaded ROM! (Game Gear mode: {})", is_gg);
                                 },
                                 Err(e) => eprintln!("Failed to load ROM: {}", e)
                             }
@@ -136,17 +139,19 @@ pub fn launch_frontend(rom_path: Option<String>) {
         });
         
         // Initialize Emulator core if ROM provided via CLI args
-        if let Some(path) = &*rom_path_rc {
-            match std::fs::read(path) {
+        if let Some(path_str) = &*rom_path_rc {
+            match std::fs::read(path_str) {
                 Ok(rom_data) => {
-                    *emu.borrow_mut() = Some(Emulator::new(rom_data));
+                    let path = std::path::Path::new(path_str);
+                    let is_gg = path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("gg")).unwrap_or(false);
+                    *emu.borrow_mut() = Some(Emulator::new(rom_data, is_gg, audio_sample_rate_rc.get()));
                 },
                 Err(e) => eprintln!("Failed to load ROM: {}", e)
             }
         }
         
         // Setup GTK keyboard tracking
-        let key_state = Rc::new(RefCell::new((false, false, false, false, false, false))); // Up, Down, Left, Right, B1, B2
+        let key_state = Rc::new(RefCell::new((false, false, false, false, false, false, false))); // Up, Down, Left, Right, B1, B2, Start
         
         let key_controller = gtk::EventControllerKey::new();
         
@@ -160,6 +165,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 Some("Right") => state.3 = true,
                 Some("z") | Some("Z") => state.4 = true, // Button 1
                 Some("x") | Some("X") => state.5 = true, // Button 2
+                Some("Return") | Some("KP_Enter") | Some("Enter") => state.6 = true, // Start / Pause
                 _ => {}
             }
             glib::Propagation::Proceed
@@ -175,6 +181,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 Some("Right") => state.3 = false,
                 Some("z") | Some("Z") => state.4 = false, // Button 1
                 Some("x") | Some("X") => state.5 = false, // Button 2
+                Some("Return") | Some("KP_Enter") | Some("Enter") => state.6 = false, // Start / Pause
                 _ => {}
             }
         });
@@ -203,14 +210,14 @@ pub fn launch_frontend(rom_path: Option<String>) {
         
         let click_controller = gtk::GestureClick::new();
         let mouse_state_click = mouse_state.clone();
-        click_controller.connect_pressed(move |_, n_press, _, _| {
+        click_controller.connect_pressed(move |_, _n_press, _, _| {
             let mut state = mouse_state_click.borrow_mut();
             state.0 = true;
             state.3 = 6; // Guarantee at least 6 frames of trigger pull
         });
         
         let mouse_state_release = mouse_state.clone();
-        click_controller.connect_released(move |_, n_press, _, _| {
+        click_controller.connect_released(move |_, _n_press, _, _| {
             let mut state = mouse_state_release.borrow_mut();
             state.0 = false;
         });
@@ -218,15 +225,17 @@ pub fn launch_frontend(rom_path: Option<String>) {
 
         // Setup Gilrs (Gamepad)
         let gilrs = Rc::new(RefCell::new(Gilrs::new().unwrap()));
-        let gamepad_state = Rc::new(RefCell::new((false, false, false, false, false, false))); // U, D, L, R, B1, B2
+        let gamepad_state = Rc::new(RefCell::new((false, false, false, false, false, false, false))); // U, D, L, R, B1, B2, Start
 
         // Initialize Emulator core if ROM provided
-        if let Some(path) = &*rom_path_rc {
-            match std::fs::read(path) {
+        if let Some(path_str) = &*rom_path_rc {
+            match std::fs::read(path_str) {
                 Ok(rom_data) => {
-                    *emu.borrow_mut() = Some(Emulator::new(rom_data));
+                    let path = std::path::Path::new(path_str);
+                    let is_gg = path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("gg")).unwrap_or(false);
+                    *emu.borrow_mut() = Some(Emulator::new(rom_data, is_gg, audio_sample_rate_rc.get()));
                 },
-                Err(e) => eprintln!("Failed to load inicial ROM: {}", e)
+                Err(e) => eprintln!("Failed to load inicial ROM: {}" , e)
             }
         }
         
@@ -254,6 +263,7 @@ pub fn launch_frontend(rom_path: Option<String>) {
                 g_state.3 = gamepad.is_pressed(Button::DPadRight);
                 g_state.4 = gamepad.is_pressed(Button::South) || gamepad.is_pressed(Button::West); // Cross / Square
                 g_state.5 = gamepad.is_pressed(Button::East) || gamepad.is_pressed(Button::North); // Circle / Triangle
+                g_state.6 = gamepad.is_pressed(Button::Start);
             }
             
             if let Some(ref mut emu_mut) = *emu_clone.borrow_mut() {
@@ -276,7 +286,8 @@ pub fn launch_frontend(rom_path: Option<String>) {
                     ks.2 || gs.2,
                     ks.3 || gs.3,
                     ks.4 || gs.4 || trigger_active, // Button 1 is also triggered by mouse click
-                    ks.5 || gs.5  // Button 2
+                    ks.5 || gs.5, // Button 2
+                    ks.6 || gs.6  // Start / NMI
                 );
                 
                 // Pass lightgun coordinates
@@ -335,23 +346,33 @@ pub fn launch_frontend(rom_path: Option<String>) {
                     }
                 }
                 
+                let is_gg = emu_mut.is_gg;
+                let (render_w, render_h, offset_x, offset_y) = if is_gg {
+                    (160, 144, 48, 24)
+                } else {
+                    (256, 192, 0, 0)
+                };
+                
                 // Convert [u32] ARGB from minifb style to RGBA for GTK/GDK
-                let bytes: Vec<u8> = frame.iter().flat_map(|&pixel| {
-                    let r = ((pixel >> 16) & 0xFF) as u8;
-                    let g = ((pixel >> 8) & 0xFF) as u8;
-                    let b = (pixel & 0xFF) as u8;
-                    let a = ((pixel >> 24) & 0xFF) as u8;
-                    vec![r, g, b, a]
-                }).collect();
+                let mut bytes: Vec<u8> = Vec::with_capacity(render_w * render_h * 4);
+                for y in 0..render_h {
+                    for x in 0..render_w {
+                        let pixel = frame[(y + offset_y) * 256 + (x + offset_x)];
+                        bytes.push(((pixel >> 16) & 0xFF) as u8); // R
+                        bytes.push(((pixel >> 8) & 0xFF) as u8);  // G
+                        bytes.push((pixel & 0xFF) as u8);         // B
+                        bytes.push(((pixel >> 24) & 0xFF) as u8); // A
+                    }
+                }
                 
                 let bytes = glib::Bytes::from(&bytes);
                 
                 let texture = gdk::MemoryTexture::new(
-                    256,
-                    192,
+                    render_w as i32,
+                    render_h as i32,
                     gdk::MemoryFormat::R8g8b8a8,
                     &bytes,
-                    256 * 4,
+                    render_w as usize * 4,
                 );
                 
                 picture_clone.set_paintable(Some(&texture));

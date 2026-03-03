@@ -7,18 +7,18 @@ pub struct AudioMixer {
 }
 
 impl AudioMixer {
-    pub fn new() -> Self {
+    pub fn new(is_gg: bool, sample_rate: f32) -> Self {
         Self {
-            psg: Psg::new(),
+            psg: Psg::new(is_gg, sample_rate),
             fm: Fm::new(),
         }
     }
 
-    pub fn generate_sample(&mut self) -> f32 {
-        let psg_out = self.psg.generate_sample();
+    pub fn generate_sample(&mut self) -> (f32, f32) {
+        let (psg_l, psg_r) = self.psg.generate_sample();
         let fm_out = self.fm.generate_sample();
         
-        // Summing and allowing a safe headroom
-        (psg_out + fm_out) / 2.0
+        // Summing and allowing a safe headroom (Monophonic FM centered)
+        ((psg_l + fm_out) / 2.0, (psg_r + fm_out) / 2.0)
     }
 }

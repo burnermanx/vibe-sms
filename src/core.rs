@@ -7,12 +7,13 @@ pub struct Emulator {
     pub vcounter: u16,
     pub cycles_accumulator: i32,
     pub line_interrupt_counter: u8,
+    pub is_gg: bool,
 }
 
 impl Emulator {
-    pub fn new(rom_data: Vec<u8>) -> Self {
-        let bus = Bus::new(rom_data);
-        let system = System::new(bus);
+    pub fn new(rom_data: Vec<u8>, is_gg: bool, sample_rate: f32) -> Self {
+        let bus = Bus::new(rom_data, is_gg, sample_rate);
+        let system = System::new(bus, is_gg);
         let mut cpu = Z80::new(system);
         cpu.init();
         
@@ -22,6 +23,7 @@ impl Emulator {
             vcounter: 0,
             cycles_accumulator: 0,
             line_interrupt_counter: 0,
+            is_gg,
         }
     }
 
@@ -52,9 +54,10 @@ impl Emulator {
             sample_cycles_accumulator += cycles_run as u32;
             while sample_cycles_accumulator >= cycles_per_sample {
                 sample_cycles_accumulator -= cycles_per_sample;
-                let sample = self.cpu.io.bus.borrow_mut().mixer.generate_sample();
-                // O cpal espera interleaved stereo ou mono. Aqui usaremos mono por agora
-                audio_buffer.push(sample);
+                let (sample_l, sample_r) = self.cpu.io.bus.borrow_mut().mixer.generate_sample();
+                // O cpal espera interleaved stereo: Left, Right
+                audio_buffer.push(sample_l);
+                audio_buffer.push(sample_r);
             }
             
             if self.cycles_accumulator >= cycles_per_line as i32 {
@@ -154,14 +157,25 @@ impl Emulator {
     }
 
     // Proxy commands to joypad
-    pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool) {
+    pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
         let mut bus = self.cpu.io.bus.borrow_mut();
+        
+        // Detect rising edge of Start button
+        let trigger_nmi = self.is_gg && start && !bus.joypad.gg_start;
+        
+        bus.joypad.gg_start = start;
         bus.joypad.p1_up = up;
         bus.joypad.p1_down = down;
         bus.joypad.p1_left = left;
         bus.joypad.p1_right = right;
         bus.joypad.p1_b1 = b1;
         bus.joypad.p1_b2 = b2;
+        
+        drop(bus);
+        
+        if trigger_nmi {
+            self.cpu.pulse_nmi();
+        }
     }
 
     pub fn set_lightgun(&mut self, active: bool, x: u16, y: u16) {

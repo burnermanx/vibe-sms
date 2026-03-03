@@ -11,29 +11,36 @@ pub struct Psg {
     pub registers: [u16; 8], 
     pub phases: [f32; 4],
     latch: u8,
-    
     // Noise shift register (LFSR)
     noise_lfsr: u16,
+    
+    // Stereo Panning (Game Gear only - Port 0x06)
+    pub stereo: u8,
+    pub is_gg: bool,
+    pub sample_rate: f32,
 }
 
 impl Default for Psg {
     fn default() -> Self {
-        Self::new()
+        Self::new(false, 44100.0)
     }
 }
 
 impl Psg {
-    pub fn new() -> Self {
+    pub fn new(is_gg: bool, sample_rate: f32) -> Self {
         Self {
             registers: [
-                0, 0x0F, // Ch 1 Tone/Vol (0x0F = Silence)
-                0, 0x0F, // Ch 2 Tone/Vol
-                0, 0x0F, // Ch 3 Tone/Vol
-                0, 0x0F, // Ch 4 Noise/Vol
+                0, 0x0F,
+                0, 0x0F,
+                0, 0x0F,
+                0, 0x0F,
             ],
             phases: [0.0; 4],
             latch: 0,
             noise_lfsr: 0x8000,
+            stereo: 0xFF,
+            is_gg,
+            sample_rate,
         }
     }
 
@@ -72,10 +79,17 @@ impl Psg {
         }
     }
 
-    pub fn generate_sample(&mut self) -> f32 {
-        let mut mixed = 0.0;
+    pub fn write_stereo(&mut self, value: u8) {
+        if self.is_gg {
+            self.stereo = value;
+        }
+    }
+
+    pub fn generate_sample(&mut self) -> (f32, f32) {
+        let mut mixed_l = 0.0;
+        let mut mixed_r = 0.0;
         let master_clock = 3579545.0;
-        let sample_rate = 44100.0;
+        let sample_rate = self.sample_rate;
         
         // Tone channels 0 to 2
         for i in 0..3 {
@@ -96,9 +110,13 @@ impl Psg {
             let output = if self.phases[i] < 0.5 { 1.0 } else { -1.0 };
             let volume = PSG_VOLUME_TABLE[(self.registers[i * 2 + 1] & 0x0F) as usize];
             
+            // Apply Stereo Panning for Game Gear; always true for SMS (panned centre)
+            let pan_r = if self.is_gg { (self.stereo & (1 << i)) != 0 } else { true };
+            let pan_l = if self.is_gg { (self.stereo & (1 << (i + 4))) != 0 } else { true };
             // Add to mix if freq is above a cutoff to avoid DC offset hum on low limits
             if freq > 10.0 {
-                mixed += output * volume;
+                if pan_l { mixed_l += output * volume; }
+                if pan_r { mixed_r += output * volume; }
             }
         }
         
@@ -138,9 +156,14 @@ impl Psg {
         
         let noise_output = if (self.noise_lfsr & 0x01) == 1 { 1.0 } else { -1.0 };
         let noise_vol = PSG_VOLUME_TABLE[(self.registers[7] & 0x0F) as usize];
+
+        // Apply Stereo Panning for Noise; always true for SMS (panned centre)
+        let pan_r = if self.is_gg { (self.stereo & (1 << 3)) != 0 } else { true };
+        let pan_l = if self.is_gg { (self.stereo & (1 << 7)) != 0 } else { true };
         
-        mixed += noise_output * noise_vol;
+        if pan_l { mixed_l += noise_output * noise_vol; }
+        if pan_r { mixed_r += noise_output * noise_vol; }
         
-        mixed * MAX_VOLUME
+        (mixed_l * MAX_VOLUME, mixed_r * MAX_VOLUME)
     }
 }
