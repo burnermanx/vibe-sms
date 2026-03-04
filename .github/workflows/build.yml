@@ -32,18 +32,21 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: vibe-sms.exe
             asset_name: vibe-sms-windows-x86_64.exe
+            zip_name: vibe-sms-windows-x86_64.zip
 
           # macOS Intel
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: vibe-sms
             asset_name: vibe-sms-macos-x86_64
+            zip_name: vibe-sms-macos-x86_64.zip
 
           # macOS Apple Silicon
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: vibe-sms
             asset_name: vibe-sms-macos-arm64
+            zip_name: vibe-sms-macos-arm64.zip
 
     steps:
       - name: Checkout
@@ -90,19 +93,110 @@ jobs:
         if: matrix.target != 'aarch64-apple-darwin'
         run: cargo test --target ${{ matrix.target }}
 
-      # Upload binary as artifact for every build
-      - name: Upload build artifact
+      # ── Package as zip (Windows / macOS only) ────────────────────────────
+      - name: Package as zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" `
+            -DestinationPath "${{ matrix.zip_name }}"
+
+      - name: Package as zip (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          zip -j "${{ matrix.zip_name }}" \
+            "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+
+      # Upload binary artifact — Linux: raw binary, Windows/macOS: zip
+      - name: Upload build artifact (Linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
-      # On release, upload as release asset
-      - name: Upload to release
-        if: github.event_name == 'release'
+      - name: Upload build artifact (Windows / macOS)
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip_name }}
+          path: ${{ matrix.zip_name }}
+
+      # ── AppImage (Linux x86_64 only) ─────────────────────────────────────
+      - name: Create AppImage
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          # ── AppDir structure ──────────────────────────────────────────────
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp target/x86_64-unknown-linux-gnu/release/vibe-sms AppDir/usr/bin/vibe-sms
+
+          # ── Desktop entry ─────────────────────────────────────────────────
+          cat > AppDir/vibe-sms.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=vibe-sms
+          Exec=vibe-sms %f
+          Icon=vibe-sms
+          Comment=Sega Master System / Game Gear emulator
+          Categories=Game;Emulator;
+          MimeType=application/x-sms-rom;application/x-gg-rom;
+          EOF
+          cp AppDir/vibe-sms.desktop AppDir/usr/share/applications/
+
+          # ── Icon via ImageMagick ──────────────────────────────────────────
+          convert -size 256x256 xc:'#1a1a2e' \
+            -fill '#e94560' -draw "roundrectangle 20,20 236,236 30,30" \
+            -fill white -font DejaVu-Sans-Bold -pointsize 56 \
+            -gravity center -annotate 0 "SMS" \
+            AppDir/vibe-sms.png
+          cp AppDir/vibe-sms.png AppDir/usr/share/icons/hicolor/256x256/apps/
+
+          # ── AppRun script ─────────────────────────────────────────────────
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/sh
+          DIR="$(dirname "$(readlink -f "$0")")"
+          exec "$DIR/usr/bin/vibe-sms" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # ── Package with appimagetool ─────────────────────────────────────
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run \
+            AppDir vibe-sms-linux-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-sms-linux-x86_64.AppImage
+          path: vibe-sms-linux-x86_64.AppImage
+
+      # ── On release, upload everything ────────────────────────────────────
+      - name: Upload binary to release (Linux)
+        if: github.event_name == 'release' && runner.os == 'Linux'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
           asset_name: ${{ matrix.asset_name }}
+          tag: ${{ github.ref }}
+
+      - name: Upload zip to release (Windows / macOS)
+        if: github.event_name == 'release' && runner.os != 'Linux'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ matrix.zip_name }}
+          asset_name: ${{ matrix.zip_name }}
+          tag: ${{ github.ref }}
+
+      - name: Upload AppImage to release
+        if: github.event_name == 'release' && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: vibe-sms-linux-x86_64.AppImage
+          asset_name: vibe-sms-linux-x86_64.AppImage
           tag: ${{ github.ref }}
