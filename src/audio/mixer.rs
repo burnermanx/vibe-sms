@@ -17,7 +17,7 @@ impl AudioMixer {
     pub fn generate_sample(&mut self) -> (f32, f32) {
         let (psg_l, psg_r) = self.psg.generate_sample();
         let fm_out = self.fm.generate_sample();
-        
+
         // Summing and allowing a safe headroom (Monophonic FM centered)
         ((psg_l + fm_out) / 2.0, (psg_r + fm_out) / 2.0)
     }
