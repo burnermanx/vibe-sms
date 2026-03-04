@@ -17,8 +17,14 @@ gilrs = "0.11.0"
 # minifb: software framebuffer window — no GPU driver requirements, zero runtime deps on Windows
 minifb = "0.28"
 
-# Native file dialogs (Open ROM) — works on Linux/Windows/macOS
-rfd = "0.15"
+# Native file dialogs (Open ROM)
+# Linux: use GTK3 backend (avoids the xdg-portal/wayland-sys dependency chain)
+# Windows/macOS: use default (native system dialogs, no extra deps)
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.15" }
 
 [build-dependencies]
 cc = "1.0"
