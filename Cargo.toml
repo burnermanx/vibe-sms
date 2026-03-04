@@ -1,7 +1,7 @@
 [package]
 name = "vibe-sms"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 # Core
@@ -13,10 +13,12 @@ cpal = "0.15.3"
 # Input
 gilrs = "0.11.0"
 
-# Frontend - GTK4 / Libadwaita
-gtk = { package = "gtk4", version = "0.9.1" }
-libadwaita = "0.7.0"
-glib = "0.20.0"
+# Frontend — cross-platform (Linux/Windows/macOS)
+# minifb: software framebuffer window — no GPU driver requirements, zero runtime deps on Windows
+minifb = "0.28"
+
+# Native file dialogs (Open ROM) — works on Linux/Windows/macOS
+rfd = "0.15"
 
 [build-dependencies]
 cc = "1.0"

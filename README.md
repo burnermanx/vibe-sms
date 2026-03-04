@@ -1,6 +1,6 @@
 # vibe-sms
 
-**vibe-sms** is a highly accurate and portable emulator for the **Sega Master System** and **Sega Game Gear**, built entirely from scratch in **Rust**. It features a modern, native graphical user interface for Linux developed using **GTK4** and **Libadwaita**.
+**vibe-sms** is a highly accurate and portable emulator for the **Sega Master System** and **Sega Game Gear**, built entirely from scratch in **Rust**. It runs natively on **Linux**, **Windows**, and **macOS** with a lightweight cross-platform window powered by **minifb**.
 
 This project was initiated from scratch using **Google Antigravity** powered by **Gemini**.
 
@@ -10,46 +10,54 @@ This project was initiated from scratch using **Google Antigravity** powered by 
 
 ### 🎮 Platform Support
 - **Sega Master System** (Mark III / SMS1 / SMS2) — full support
-- **Sega Game Gear** — full support, including hardware-accurate color palette (CRAM), cropped 160×144 viewport, and Start button mapped to NMI
+- **Sega Game Gear** — full support, including hardware-accurate 12-bit CRAM, cropped 160×144 viewport, and Start button via I/O port `$00`
 
 ROMs are auto-detected by file extension (`.sms`, `.sg` → Master System; `.gg` → Game Gear).
 
 ### 🖥️ Video (VDP — TMS9918 / 315-5246)
-- Background tile rendering with scroll registers
+- Background tile rendering with scroll registers and **priority bit** (BG-over-sprite layering)
 - Sprite rendering with per-line priority and flicker
-- Accurate Line interrupts and VBlank (INT) generation
-- Game Gear CRAM: 12-bit color (4096 colors) with hardware latch, cropped to the 160×144 GG display window
+- Accurate line interrupts and VBlank (INT) generation
+- **H counter tracking** — approximated from Z80 cycle position within each scanline
+- CRAM write updates the read buffer correctly per SMS spec
 
 ### 🔊 Audio
-- **PSG (SN76489)** — all 3 tone channels + noise channel, with mathematically accurate phase accumulators clocked from the Z80 master clock. Noise LFSR matches the SMS tap bits for both white and periodic noise.
-- **FM Synthesizer (YM2413 / OPLL)** — hardware FM synthesis for Japanese Master System units with full 9-channel (melodic) + 5-channel (rhythm) support
-- **Game Gear Stereo Panning** — I/O port `$06` stereo control register, routing each of the 4 PSG channels independently to Left and Right outputs
-- Audio output via **`cpal`** with interleaved stereo (`[L, R, L, R, ...]`) using the actual device sample rate (44100Hz or 48000Hz) for accurate pitch
+- **PSG (SN76489)** — complete rewrite using **integer decrementing counters** matching hardware behavior; accurate pitch, LFSR noise (rising-edge clocked), and PCM playback via register 0/1
+- **FM Synthesizer (YM2413 / OPLL)** — full 9-channel melodic + 5-channel rhythm; closely matched to the emu2413 C reference (v1.5.9)
+- **FM toggle** — press `M` to switch between FM and PSG-only mode (triggers emulator reset for accurate game detection)
+- **Game Gear Stereo Panning** — I/O port `$06` routes each PSG channel to Left/Right independently
+- Audio output via **`cpal`** using the actual device sample rate (44100 Hz or 48000 Hz)
 
-### ⚡ Rendering & VSync
-- **VSync-locked rendering** via GTK4 `FrameClock` (`add_tick_callback`), synchronized with the Wayland/X11 compositor — zero screen tearing
-- **Time-debt accumulator**: emulation is paced to the SMS native ~59.922Hz independently of monitor refresh rate (60Hz, 75Hz, 144Hz, etc.), so games always run at the correct speed
+### ⚡ Rendering & Timing
+- **Software framebuffer rendering** via `minifb` — works on any GPU (or no GPU), zero driver requirements
+- Nearest-neighbor scaling with **letterboxed aspect ratio** preservation
+- **Time-debt accumulator** pacing to SMS native ~59.922 Hz regardless of monitor refresh rate
 
 ### 🕹️ Input
-- **Keyboard**: Arrow Keys / WASD for movement, `Z` and `X` for buttons 1 and 2, `Enter` for Game Gear Start
-- **Gamepad / Joystick**: native Linux support via `gilrs` — DPad, South/West for button 1, East/North for button 2, Start button
-- **Light Gun (Phaser)**: mouse click triggers the light gun, with coordinates scaled to the emulated screen space
+- **Keyboard**: Arrow Keys for movement, `Z` / `X` for buttons 1 and 2, `Enter` for Start/Pause
+- **Gamepad / Joystick**: native support via `gilrs` — D-Pad, South/West for button 1, East/North for button 2, Start
+- **SMS Pause button**: `Enter` triggers a real CPU NMI on Master System
+- **Light Gun (Phaser)**: left mouse button fires, coordinates scaled to emulated screen space
 
 ---
 
-## Requirements
+## Platform Requirements
 
-The emulator targets Linux and has been tested on **Arch Linux**. It requires GTK4 development libraries.
-
-### Arch Linux
+### Linux
 ```bash
-sudo pacman -S base-devel rustup gtk4 libadwaita
+# Arch Linux
+sudo pacman -S base-devel rustup
+
+# Ubuntu / Debian
+sudo apt install build-essential cargo rustc \
+  libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev pkg-config
 ```
 
-### Ubuntu / Debian
-```bash
-sudo apt install build-essential cargo rustc libgtk-4-dev libadwaita-1-dev
-```
+### Windows
+No extra dependencies. The `.exe` is fully self-contained — no runtime DLLs needed.
+
+### macOS
+No extra dependencies. Uses the system Cocoa window via minifb.
 
 ---
 
@@ -73,17 +81,28 @@ cargo build --release
 ## Usage
 
 1. Launch the emulator with `cargo run --release`
-2. Click **"Open ROM"** in the header bar
-3. Select a `.sms`, `.sg`, or `.gg` ROM file — the platform is detected automatically
+2. Press **`O`** to open a ROM via the native file dialog
+3. Select a `.sms`, `.sg`, or `.gg` file — platform is detected automatically
 4. The game boots immediately
-5. Controls:
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `O` | Open ROM (native file dialog) |
+| `R` | Reset |
+| `S` | Stop emulation |
+| `M` | Toggle FM Sound on/off (SMS only) |
+| `Q` | Quit |
+
+### Game Controls
 
 | Action | Keyboard | Gamepad |
-|---|---|---|
+|--------|----------|---------|
 | Move | Arrow Keys | D-Pad |
 | Button 1 | `Z` | South / West (A/X) |
 | Button 2 | `X` | East / North (B/Y) |
-| Start (GG) | `Enter` | Start |
+| Start / Pause | `Enter` | Start |
 | Light Gun | Left Mouse Click | — |
 
 ---
@@ -92,19 +111,38 @@ cargo build --release
 
 ```
 vibe-sms/
+├── .github/
+│   └── workflows/
+│       └── build.yml   # CI/CD: Linux, Windows, macOS, Apple Silicon
 ├── src/
 │   ├── main.rs         # Entry point
-│   ├── core.rs         # Emulator loop (Z80 step, VDP, audio sync)
-│   ├── bus.rs          # Z80 I/O bus: routes memory, VDP, audio, joypad
-│   ├── mmu.rs          # Memory mapper (ROM paging, RAM)
-│   ├── vdp.rs          # Video Display Processor
-│   ├── joypad.rs       # Joypad + light gun state
+│   ├── core.rs         # Emulator loop (Z80 step, VDP, H counter, audio sync)
+│   ├── bus.rs          # Z80 I/O bus: memory, VDP, audio, joypad (with port mirroring)
+│   ├── mmu.rs          # Memory mapper (ROM paging, SRAM)
+│   ├── vdp.rs          # Video Display Processor (TMS9918 / 315-5246)
+│   ├── joypad.rs       # Joypad + light gun + GG Start button
 │   ├── audio/
-│   │   ├── psg.rs      # SN76489 PSG (tone + noise + GG stereo panning)
+│   │   ├── psg.rs      # SN76489 PSG (integer counters, LFSR, GG stereo)
 │   │   ├── ym2413.rs   # YM2413 FM synthesizer (OPLL)
+│   │   ├── fm.rs       # FM chip interface + user_disabled flag
 │   │   └── mixer.rs    # Combines PSG + FM into stereo output
 │   └── frontend/
-│       └── mod.rs      # GTK4 UI, cpal audio stream, input handling
+│       └── mod.rs      # minifb window, cpal audio, gilrs input, rfd dialogs
 ```
 
-The backend (`audio/`, `mmu.rs`, `vdp.rs`, `core.rs`) is fully decoupled from the GTK frontend, making future ports to other platforms straightforward.
+The emulation core (`audio/`, `mmu.rs`, `vdp.rs`, `core.rs`) is fully decoupled from the frontend.
+
+---
+
+## Continuous Integration
+
+Every push builds on all three platforms automatically via GitHub Actions:
+
+| Platform | Target | Artifact |
+|----------|--------|---------|
+| Linux | `x86_64-unknown-linux-gnu` | `vibe-sms` |
+| Windows | `x86_64-pc-windows-msvc` | `vibe-sms.exe` |
+| macOS Intel | `x86_64-apple-darwin` | `vibe-sms` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `vibe-sms` |
+
+Release binaries are automatically attached to GitHub releases.
