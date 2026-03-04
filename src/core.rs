@@ -178,9 +178,10 @@ impl Emulator {
     // Proxy commands to joypad
     pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
         let mut bus = self.cpu.io.bus.borrow_mut();
-        
-        // Detect rising edge of Start button
-        let trigger_nmi = self.is_gg && start && !bus.joypad.gg_start;
+        // Detect rising edge of Start/Pause button
+        // SMS: Pause button triggers NMI
+        // Game Gear: Start button is read from I/O port 0x00, DOES NOT trigger NMI
+        let trigger_nmi = !self.is_gg && start && !bus.joypad.gg_start;
         
         bus.joypad.gg_start = start;
         bus.joypad.p1_up = up;
