@@ -49,11 +49,17 @@ impl Bus {
             },
             // Game Gear Start button and I/O ports
             0x00 => if self.is_gg { self.joypad.read_port_00() } else { 0xFF },
-            // Portas do controle/joypad (I/O do systema): $DC, $DD
-            0xDC => self.joypad.read_port_dc(),
-            0xDD => self.joypad.read_port_dd(),
-            // FM Audio Control and Detection port ($F0 - $F2)
+            // FM Audio Detection port ($F0 - $F2) — checked before the 0xC0-0xFF joypad mirror
             0xF0..=0xF2 => self.mixer.fm.read_data(port),
+            // I/O ports: 0xC0-0xFF → Joypad (mirrored throughout this range)
+            // Even ports = Port A ($DC equivalent), Odd ports = Port B ($DD equivalent)
+            0xC0..=0xFF => {
+                if port % 2 == 0 {
+                    self.joypad.read_port_dc()
+                } else {
+                    self.joypad.read_port_dd()
+                }
+            },
             // Portas não mapeadas ou padrões
             _ => 0xFF,
         }

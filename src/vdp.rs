@@ -148,6 +148,7 @@ impl Vdp {
                 let h_flip = (tile_word & 0x0200) != 0;
                 let v_flip = (tile_word & 0x0400) != 0;
                 let palette_bank = if (tile_word & 0x0800) != 0 { 16 } else { 0 };
+                let bg_priority = (tile_word & 0x1000) != 0;
                 
                 let tile_base_addr = tile_index * 32;
                 
@@ -171,7 +172,15 @@ impl Vdp {
                 let final_color_addr = palette_bank + color_index;
                 let argb = self.get_color(final_color_addr);
                 
-                self.frame_buffer[screen_y * 256 + screen_x] = argb;
+                // Store priority flag in bit 24 of frame_buffer for sprite compositing.
+                // We use the alpha channel's bit 0 to encode tile priority.
+                let priority_encoded = if bg_priority && color_index != 0 {
+                    argb | 0x01000000  // Mark as high-priority BG pixel
+                } else {
+                    argb & 0xFE000000 | (argb & 0x00FFFFFF)  // Normal pixel
+                };
+                
+                self.frame_buffer[screen_y * 256 + screen_x] = priority_encoded;
             }
         
         // Renderização de Sprites (Hardware de Mobilidade)
@@ -248,11 +257,20 @@ impl Vdp {
                             if (plane3 & mask) != 0 { color_index |= 8; }
                             
                             if color_index != 0 {
-                                // Se um pixel opaco de sprite já foi desenhado aqui, há colisão
-                                if line_sprite_buffer[draw_x_u] {
+                                // Check BG priority: if the bg pixel has priority and is non-transparent,
+                                // the sprite pixel is hidden behind it.
+                                let bg_pixel = self.frame_buffer[screen_y * 256 + draw_x_u];
+                                let bg_has_priority = (bg_pixel & 0x01000000) != 0;
+                                
+                                if bg_has_priority {
+                                    // BG wins — don't draw sprite, but still track collision
+                                    if line_sprite_buffer[draw_x_u] {
+                                        self.sprite_collision = true;
+                                    }
+                                    line_sprite_buffer[draw_x_u] = true;
+                                } else if line_sprite_buffer[draw_x_u] {
                                     self.sprite_collision = true;
                                 } else {
-                                    // Se não há colisão prévia, esse sprite tem a maior prioridade e desenhamos
                                     let argb = self.get_color(16 + color_index);
                                     self.frame_buffer[screen_y * 256 + draw_x_u] = argb;
                                     line_sprite_buffer[draw_x_u] = true;
@@ -308,6 +326,7 @@ impl Vdp {
                     let addr_sms = (self.address_register & 0x1F) as usize;
                     self.cram[addr_sms] = value;
                 }
+                self.read_buffer = value; // SMS spec: write_data always updates read buffer
             }
         }
         self.address_register = (self.address_register + 1) & 0x3FFF; // Auto-increment

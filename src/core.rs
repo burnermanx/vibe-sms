@@ -91,7 +91,21 @@ impl Emulator {
                     self.vcounter - 6
                 };
                 self.cpu.io.bus.borrow_mut().vdp.v_counter = hw_vcounter as u8;
-                self.cpu.io.bus.borrow_mut().vdp.h_counter = 0x80; 
+
+                // Update H counter based on cycle position within the scanline.
+                // The VDP H counter maps pixel positions (0-341) to counter values:
+                //   Pixels 0-293: H counter = pixel / 2 (values 0x00 to 0x93)  
+                //   Pixels 294-341: H counter = (pixel - 294) / 2 + 0xED - 23 (values 0xED down through jump to 0x93)
+                // Since Z80 cycles × 3/2 ≈ pixel position, and we reset cycles_accumulator each line:
+                let cycle_in_line = (self.cycles_accumulator.max(0) as u32).min(227);
+                let pixel_pos = (cycle_in_line * 3) / 2; // 0-341 range
+                let h_counter = if pixel_pos < 0xED {
+                    pixel_pos as u8
+                } else {
+                    // Jump: after 0xED (237) the counter wraps through 0x93-0xFF hblank region
+                    (pixel_pos - 0xED + 0x93) as u8
+                };
+                self.cpu.io.bus.borrow_mut().vdp.h_counter = h_counter;
                 
                 if self.vcounter < 192 {
                     self.cpu.io.bus.borrow_mut().vdp.render_scanline(self.vcounter as usize);
@@ -153,7 +167,12 @@ impl Emulator {
     }
 
     pub fn get_framebuffer(&self) -> [u32; 256 * 192] {
-        self.cpu.io.bus.borrow().vdp.frame_buffer.clone()
+        let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer.clone();
+        // Strip the internal priority encoding bit before output
+        for pixel in fb.iter_mut() {
+            *pixel = (*pixel & 0x00FFFFFF) | 0xFF000000;
+        }
+        fb
     }
 
     // Proxy commands to joypad
