@@ -158,8 +158,6 @@ const PM_TABLE: [[i8; 8]; 8] = [
 ];
 
 // EG States
-// EG States
-const EG_SETTLE: u8 = 0;
 const EG_ATTACK: u8 = 1;
 const EG_DECAY: u8 = 2;
 const EG_SUSTAIN: u8 = 3;
@@ -170,8 +168,14 @@ const EG_MUTE: u32 = (1 << EG_BITS) - 1;
 const EG_MAX: u32 = EG_MUTE - 4;
 const DAMPER_RATE: u32 = 12;
 
-const SLOT_BD1: usize = 12;
-const SLOT_BD2: usize = 13;
+// Slot update request flags (must match emu2413 C reference)
+const UPDATE_WS: u32 = 1;
+const UPDATE_TLL: u32 = 2;
+const UPDATE_RKS: u32 = 4;
+const UPDATE_EG: u32 = 8;
+const UPDATE_ALL: u32 = 255;
+
+
 const SLOT_HH: usize = 14;
 const SLOT_SD: usize = 15;
 const SLOT_TOM: usize = 16;
@@ -581,7 +585,7 @@ impl Ym2413 {
         } else {
             slot.eg_state = EG_ATTACK;
         }
-        slot.update_requests |= 4; // UPDATE_EG
+        slot.update_requests |= UPDATE_EG;
     }
 
     fn calc_envelope(&mut self, slot_idx: usize, buddy_idx: Option<usize>, test: bool) {
@@ -671,7 +675,7 @@ impl Ym2413 {
     fn commit_slot_update(&mut self, idx: usize) {
         let slot = &mut self.slot[idx];
 
-        if (slot.update_requests & 1) != 0 { // UPDATE_TLL
+        if (slot.update_requests & UPDATE_TLL) != 0 {
             if (slot.slot_type & 1) == 0 {
                 slot.tll = self.tll_table[(slot.blk_fnum >> 5) as usize][slot.patch.tl as usize][slot.patch.kl as usize] as u16;
             } else {
@@ -679,11 +683,11 @@ impl Ym2413 {
             }
         }
 
-        if (slot.update_requests & 2) != 0 { // UPDATE_RKS
+        if (slot.update_requests & UPDATE_RKS) != 0 {
             slot.rks = self.rks_table[(slot.blk_fnum >> 8) as usize][slot.patch.kr as usize];
         }
 
-        if (slot.update_requests & 6) != 0 { // UPDATE_RKS | UPDATE_EG
+        if (slot.update_requests & (UPDATE_RKS | UPDATE_EG)) != 0 {
             let p_rate = if (slot.slot_type & 1) == 0 && slot.key_flag == 0 {
                 0
             } else {
@@ -729,16 +733,6 @@ impl Ym2413 {
         self.lfo_am = AM_TABLE[((self.am_phase >> 6) as usize) % AM_TABLE.len()];
     }
 
-    fn update_noise(&mut self) {
-        if self.rhythm_mode == 0 {
-            for _ in 0..14 {
-                if (self.noise & 1) != 0 {
-                    self.noise ^= 0x800200;
-                }
-                self.noise >>= 1;
-            }
-        }
-    }
 
     fn update_short_noise(&mut self) {
         let pg_hh = self.slot[SLOT_HH].pg_out;
@@ -874,37 +868,44 @@ impl Ym2413 {
         self.update_short_noise();
         self.update_slots();
 
+        // CH1-6: always melodic
         for i in 0..6 {
             let modulated = self.calc_slot_mod(i);
-            self.ch_out[i] = -(self.calc_slot_car(i, modulated) >> 1); // _MO equivalent
+            self.ch_out[i] = (-self.calc_slot_car(i, modulated)) >> 1; // _MO: negate first, then shift
         }
 
+        // CH7
         if self.rhythm_mode == 0 {
             let p6 = self.calc_slot_mod(6);
-            self.ch_out[6] = -(self.calc_slot_car(6, p6) >> 1);
-            let p7 = self.calc_slot_mod(7);
-            self.ch_out[7] = -(self.calc_slot_car(7, p7) >> 1);
-            let p8 = self.calc_slot_mod(8);
-            self.ch_out[8] = -(self.calc_slot_car(8, p8) >> 1);
+            self.ch_out[6] = (-self.calc_slot_car(6, p6)) >> 1;
         } else {
             // BD
             let p6 = self.calc_slot_mod(6);
             self.ch_out[9] = self.calc_slot_car(6, p6); // _RO
-            
-            for _ in 0..14 { self.tick_noise(); }
-            
+        }
+        for _ in 0..14 { self.tick_noise(); }
+
+        // CH8
+        if self.rhythm_mode == 0 {
+            let p7 = self.calc_slot_mod(7);
+            self.ch_out[7] = (-self.calc_slot_car(7, p7)) >> 1;
+        } else {
             // HH and SD
             self.ch_out[10] = self.calc_slot_hat(); // _RO
             self.ch_out[11] = self.calc_slot_snare(); // _RO
-            
-            for _ in 0..2 { self.tick_noise(); }
-            
+        }
+        for _ in 0..2 { self.tick_noise(); }
+
+        // CH9
+        if self.rhythm_mode == 0 {
+            let p8 = self.calc_slot_mod(8);
+            self.ch_out[8] = (-self.calc_slot_car(8, p8)) >> 1;
+        } else {
             // TOM and CYM
             self.ch_out[12] = self.calc_slot_tom(); // _RO
             self.ch_out[13] = self.calc_slot_cym(); // _RO
-            
-            for _ in 0..2 { self.tick_noise(); }
         }
+        for _ in 0..2 { self.tick_noise(); }
     }
     
     fn tick_noise(&mut self) {
@@ -926,57 +927,96 @@ impl Ym2413 {
     }
     
     fn update_reg(&mut self) {
-        let addr = self.adr as usize;
-        let data = self.reg[addr];
+        let mut addr = self.adr as usize;
+        let data;
+
+        // Register mirroring (C reference: 0x19-0x1F -> 0x10-0x16, etc.)
+        if (0x19..=0x1f).contains(&addr) || (0x29..=0x2f).contains(&addr) || (0x39..=0x3f).contains(&addr) {
+            addr -= 9;
+        }
+        data = self.reg[addr];
 
         match addr {
-            0x00 => { // Modulator 
+            0x00 => { // Modulator AM/PM/EG/KR/ML
                 self.patch[0].am = ((data >> 7) & 1) as u32;
                 self.patch[0].pm = ((data >> 6) & 1) as u32;
                 self.patch[0].eg = ((data >> 5) & 1) as u32;
                 self.patch[0].kr = ((data >> 4) & 1) as u32;
                 self.patch[0].ml = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2].update_requests |= UPDATE_RKS | UPDATE_EG;
+                    }
+                }
             }
-            0x01 => { // Carrier 
+            0x01 => { // Carrier AM/PM/EG/KR/ML
                 self.patch[1].am = ((data >> 7) & 1) as u32;
                 self.patch[1].pm = ((data >> 6) & 1) as u32;
                 self.patch[1].eg = ((data >> 5) & 1) as u32;
                 self.patch[1].kr = ((data >> 4) & 1) as u32;
                 self.patch[1].ml = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2 + 1].update_requests |= UPDATE_RKS | UPDATE_EG;
+                    }
+                }
             }
             0x02 => { // Modulator KSL & TL
                 self.patch[0].kl = ((data >> 6) & 3) as u32;
                 self.patch[0].tl = (data & 63) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2].update_requests |= UPDATE_TLL;
+                    }
+                }
             }
             0x03 => { // Carrier KSL, Waveform, Feedback
                 self.patch[1].kl = ((data >> 6) & 3) as u32;
                 self.patch[1].ws = ((data >> 4) & 1) as u32;
                 self.patch[0].ws = ((data >> 3) & 1) as u32;
-                self.patch[1].fb = (data & 7) as u32;
-                self.update_patch(0);
+                self.patch[0].fb = (data & 7) as u32;
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2].update_requests |= UPDATE_WS;
+                        self.slot[i * 2 + 1].update_requests |= UPDATE_WS | UPDATE_TLL;
+                    }
+                }
             }
             0x04 => { // Modulator AR & DR
                 self.patch[0].ar = ((data >> 4) & 15) as u32;
                 self.patch[0].dr = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2].update_requests |= UPDATE_EG;
+                    }
+                }
             }
             0x05 => { // Carrier AR & DR
                 self.patch[1].ar = ((data >> 4) & 15) as u32;
                 self.patch[1].dr = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2 + 1].update_requests |= UPDATE_EG;
+                    }
+                }
             }
             0x06 => { // Modulator SL & RR
                 self.patch[0].sl = ((data >> 4) & 15) as u32;
                 self.patch[0].rr = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2].update_requests |= UPDATE_EG;
+                    }
+                }
             }
             0x07 => { // Carrier SL & RR
                 self.patch[1].sl = ((data >> 4) & 15) as u32;
                 self.patch[1].rr = (data & 15) as u32;
-                self.update_patch(0);
+                for i in 0..9 {
+                    if self.patch_number[i] == 0 {
+                        self.slot[i * 2 + 1].update_requests |= UPDATE_EG;
+                    }
+                }
             }
             0x0E => {
                 let new_rhythm_mode = (data >> 5) & 1;
@@ -991,12 +1031,12 @@ impl Ym2413 {
                         self.set_patch(6, 16);
                         self.set_patch(7, 17);
                         self.set_patch(8, 18);
-                        let vol_hh = (self.reg[0x37] >> 4) & 15;
-                        self.slot[SLOT_HH].volume = (vol_hh << 2) as i32;
-                        self.slot[SLOT_HH].update_requests |= 1;
-                        let vol_tom = (self.reg[0x38] >> 4) & 15;
-                        self.slot[SLOT_TOM].volume = (vol_tom << 2) as i32;
-                        self.slot[SLOT_TOM].update_requests |= 1;
+                        let vol_hh = ((self.reg[0x37] >> 4) & 15) as i32;
+                        self.slot[SLOT_HH].volume = vol_hh << 2;
+                        self.slot[SLOT_HH].update_requests |= UPDATE_TLL;
+                        let vol_tom = ((self.reg[0x38] >> 4) & 15) as i32;
+                        self.slot[SLOT_TOM].volume = vol_tom << 2;
+                        self.slot[SLOT_TOM].update_requests |= UPDATE_TLL;
                     } else {
                         self.slot[SLOT_HH].slot_type = 0;
                         self.slot[SLOT_HH].pg_keep = 0;
@@ -1021,81 +1061,87 @@ impl Ym2413 {
             0x20..=0x28 => {
                 // F-Number High, Block, Key On / Sustain
                 let ch = addr - 0x20;
-                let blk = (data >> 1) & 7;
-                self.set_block(ch, blk);
                 let fnum = ((data as u16 & 1) << 8) | self.reg[0x10 + ch] as u16;
                 self.set_fnumber(ch, fnum);
+                let blk = (data >> 1) & 7;
+                self.set_block(ch, blk);
                 
                 let sus_flag = (data >> 5) & 1;
                 self.slot[ch * 2 + 1].sus_flag = sus_flag;
-                self.slot[ch * 2 + 1].update_requests |= 4; // UPDATE_EG
+                self.slot[ch * 2 + 1].update_requests |= UPDATE_EG;
                 if (self.slot[ch * 2].slot_type & 1) != 0 {
                     self.slot[ch * 2].sus_flag = sus_flag;
-                    self.slot[ch * 2].update_requests |= 4; // UPDATE_EG
+                    self.slot[ch * 2].update_requests |= UPDATE_EG;
                 }
                 
                 self.update_key_status();
             }
             0x30..=0x38 => {
-                // Instrument, Volume
                 let ch = addr - 0x30;
-                let inst = data >> 4;
+                // In rhythm mode, channels 6-8 have special handling
+                if (self.reg[0x0e] & 32) != 0 && addr >= 0x36 {
+                    // Rhythm mode: don't overwrite rhythm patches, but update HH/TOM volume
+                    match addr {
+                        0x37 => {
+                            let vol = ((data >> 4) & 15) as i32;
+                            self.slot[SLOT_HH].volume = vol << 2;
+                            self.slot[SLOT_HH].update_requests |= UPDATE_TLL;
+                        }
+                        0x38 => {
+                            let vol = ((data >> 4) & 15) as i32;
+                            self.slot[SLOT_TOM].volume = vol << 2;
+                            self.slot[SLOT_TOM].update_requests |= UPDATE_TLL;
+                        }
+                        _ => {} // 0x36: BD handled via set_patch(6, 16) in rhythm init
+                    }
+                } else {
+                    self.set_patch(ch, ((data >> 4) & 15) as usize);
+                }
                 let vol = data & 15;
-                self.set_patch(ch, inst as usize);
                 self.set_volume(ch, vol << 2);
             }
             _ => {}
         }
     }
     
-    fn update_patch(&mut self, num: usize) {
-        for i in 0..9 {
-            if self.patch_number[i] as usize == num {
-                self.slot[i * 2].patch = self.patch[num * 2].clone();
-                self.slot[i * 2 + 1].patch = self.patch[num * 2 + 1].clone();
-                self.slot[i * 2].update_requests |= 1 | 2 | 4 | 8; 
-                self.slot[i * 2 + 1].update_requests |= 1 | 2 | 4 | 8;
-            }
-        }
-    }
+
 
     fn set_fnumber(&mut self, ch: usize, fnum: u16) {
         let car = &mut self.slot[ch * 2 + 1];
         car.fnum = fnum;
         car.blk_fnum = (car.blk_fnum & 0xe00) | (fnum & 0x1ff);
-        car.update_requests |= 1 | 2 | 4;
+        car.update_requests |= UPDATE_TLL | UPDATE_RKS | UPDATE_EG;
 
         let mod_s = &mut self.slot[ch * 2];
         mod_s.fnum = fnum;
         mod_s.blk_fnum = (mod_s.blk_fnum & 0xe00) | (fnum & 0x1ff);
-        mod_s.update_requests |= 1 | 2 | 4;
+        mod_s.update_requests |= UPDATE_TLL | UPDATE_RKS | UPDATE_EG;
     }
 
     fn set_block(&mut self, ch: usize, blk: u8) {
         let car = &mut self.slot[ch * 2 + 1];
         car.blk = blk;
         car.blk_fnum = ((blk as u16 & 7) << 9) | (car.blk_fnum & 0x1ff);
-        car.update_requests |= 1 | 2 | 4;
+        car.update_requests |= UPDATE_TLL | UPDATE_RKS | UPDATE_EG;
 
         let mod_s = &mut self.slot[ch * 2];
         mod_s.blk = blk;
         mod_s.blk_fnum = ((blk as u16 & 7) << 9) | (mod_s.blk_fnum & 0x1ff);
-        mod_s.update_requests |= 1 | 2 | 4;
+        mod_s.update_requests |= UPDATE_TLL | UPDATE_RKS | UPDATE_EG;
     }
 
     fn set_volume(&mut self, ch: usize, volume: u8) {
         let car = &mut self.slot[ch * 2 + 1];
         car.volume = volume as i32;
-        car.update_requests |= 1;
+        car.update_requests |= UPDATE_TLL;
     }
 
     fn set_patch(&mut self, ch: usize, num: usize) {
         self.patch_number[ch] = num as i32;
-        // The patch index map: We have 19 * 2 patches, [0]. 
         self.slot[ch * 2].patch = self.patch[num * 2].clone();
         self.slot[ch * 2 + 1].patch = self.patch[num * 2 + 1].clone();
-        self.slot[ch * 2].update_requests |= 255;
-        self.slot[ch * 2 + 1].update_requests |= 255;
+        self.slot[ch * 2].update_requests |= UPDATE_ALL;
+        self.slot[ch * 2 + 1].update_requests |= UPDATE_ALL;
     }
 
     fn update_key_status(&mut self) {
@@ -1122,15 +1168,16 @@ impl Ym2413 {
             for i in 0..18 {
                 if (updated_status & (1 << i)) != 0 {
                     if (new_slot_key_status & (1 << i)) != 0 {
+                        // slotOn
                         self.slot[i].key_flag = 1;
                         self.slot[i].eg_state = EG_DAMP;
-                        self.slot[i].update_requests |= 4; // UPDATE_EG
+                        self.slot[i].update_requests |= UPDATE_EG;
                     } else {
+                        // slotOff — only carrier transitions to RELEASE
                         self.slot[i].key_flag = 0;
                         if (self.slot[i].slot_type & 1) != 0 {
-                            self.slot[i].sus_flag = (self.reg[0x20 + i / 2] >> 5) & 1;
                             self.slot[i].eg_state = EG_RELEASE;
-                            self.slot[i].update_requests |= 4; // UPDATE_EG (was 8 before!)
+                            self.slot[i].update_requests |= UPDATE_EG;
                         }
                     }
                 }
