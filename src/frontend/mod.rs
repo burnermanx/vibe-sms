@@ -1,20 +1,21 @@
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
-use minifb::{Key, KeyRepeat, Window, WindowOptions, Scale, MouseButton, MouseMode};
+use eframe::egui::{self, Key, ColorImage, TextureHandle, TextureOptions};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use gilrs::{Gilrs, Button, Event};
+use cpal::Stream;
+use gilrs::{Gilrs, Button, Event as GilrsEvent};
 use crate::core::Emulator;
 
-// SMS/GG emulator screen dimensions
 const SMS_W: usize = 256;
 const SMS_H: usize = 192;
-const GG_W: usize = 160;
-const GG_H: usize = 144;
+const GG_W:  usize = 160;
+const GG_H:  usize = 144;
+const SMS_FRAME_US: i64 = 16_683;
 
-// ── Audio helper ─────────────────────────────────────────────────────────────
+// ── Audio ──────────────────────────────────────────────────────────────────────
 
-fn build_audio_stream() -> (Arc<Mutex<Vec<f32>>>, f32, Option<impl StreamTrait>) {
+fn build_audio_stream() -> (Arc<Mutex<Vec<f32>>>, f32, Option<Stream>) {
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(4096)));
     let buf2 = buffer.clone();
     let mut sample_rate = 44100.0f32;
@@ -44,7 +45,7 @@ fn build_audio_stream() -> (Arc<Mutex<Vec<f32>>>, f32, Option<impl StreamTrait>)
     (buffer, sample_rate, stream)
 }
 
-// ── ROM loader helper ─────────────────────────────────────────────────────────
+// ── ROM loader ─────────────────────────────────────────────────────────────────
 
 fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
     match std::fs::read(path) {
@@ -55,287 +56,437 @@ fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emula
                 .unwrap_or(false);
             let emu = Emulator::new(data, is_gg, sample_rate);
             emu.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = !is_gg && fm_disabled;
-            let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("ROM");
-            println!("Loaded ROM: {} (Game Gear: {})", name, is_gg);
+            println!("Loaded ROM: {} (GG: {})", path.file_stem().and_then(|n| n.to_str()).unwrap_or("?"), is_gg);
             Some(emu)
         }
         Err(e) => { eprintln!("Failed to load ROM: {e}"); None }
     }
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
+// ── Key config ─────────────────────────────────────────────────────────────────
 
-pub fn launch_frontend(initial_rom: Option<String>) {
-    let (audio_buf, sample_rate, _stream) = build_audio_stream();
-    let mut gilrs = Gilrs::new().expect("Failed to init gilrs");
+#[derive(Clone)]
+struct PlayerKeys {
+    up: Key, down: Key, left: Key, right: Key,
+    b1: Key, b2: Key, start: Key,
+}
 
-    // --- State ---
-    let mut emu: Option<Emulator> = None;
-    let mut rom_path: Option<PathBuf> = None;
-    let mut fm_disabled = false;
-
-    // Load from CLI if given
-    if let Some(ref path_str) = initial_rom {
-        let p = PathBuf::from(path_str);
-        if let Some(e) = load_rom(&p, sample_rate, fm_disabled) {
-            rom_path = Some(p);
-            emu = Some(e);
-        }
+impl PlayerKeys {
+    fn p1() -> Self {
+        Self { up: Key::ArrowUp, down: Key::ArrowDown, left: Key::ArrowLeft, right: Key::ArrowRight,
+               b1: Key::Z, b2: Key::X, start: Key::Enter }
     }
-
-    // --- Window ---
-    let init_w = SMS_W * 2;
-    let init_h = SMS_H * 2 + 20; // extra for status bar
-
-    let mut window = Window::new(
-        "vibe-sms",
-        init_w,
-        init_h,
-        WindowOptions {
-            resize: true,
-            scale: Scale::X1,
-            ..Default::default()
-        },
-    ).expect("Failed to create window");
-
-    // Target ~60 fps
-    window.set_target_fps(60);
-
-    // Pixel buffer for the framebuffer (SMS resolution, ARGB XRGB)
-    let mut fb: Vec<u32> = vec![0; SMS_W * SMS_H];
-
-    // --- Input state ---
-    let (mut pu, mut pd, mut pl, mut pr, mut pb1, mut pb2, mut pstart) =
-        (false, false, false, false, false, false, false);
-    let (mut mx, mut my) = (0u16, 0u16);
-    let mut mouse_pressed;
-    let mut trigger_frames: u8 = 0;
-
-    // --- Timing ---
-    let mut last_frame = Instant::now();
-    let mut time_debt_us: i64 = 0;
-    const SMS_FRAME_US: i64 = 16_683;
-
-    println!("vibe-sms — Cross-platform emulator started");
-    println!("Controls: O=Open ROM, R=Reset, S=Stop, F=Fullscreen, M=FM toggle, Esc=Exit fullscreen");
-    println!("Keyboard: Arrow keys=D-Pad, Z=Button1, X=Button2, Enter=Start/Pause");
-
-    while window.is_open() && !window.is_key_down(Key::Q) {
-        let now = Instant::now();
-        let elapsed_us = now.duration_since(last_frame).as_micros().min(50_000) as i64;
-        last_frame = now;
-        time_debt_us = (time_debt_us + elapsed_us).min(SMS_FRAME_US * 2);
-
-        // --- Gamepad polling ---
-        while let Some(Event { id, .. }) = gilrs.next_event() {
-            let gp = gilrs.gamepad(id);
-            pu    = gp.is_pressed(Button::DPadUp);
-            pd    = gp.is_pressed(Button::DPadDown);
-            pl    = gp.is_pressed(Button::DPadLeft);
-            pr    = gp.is_pressed(Button::DPadRight);
-            pb1   = gp.is_pressed(Button::South) || gp.is_pressed(Button::West);
-            pb2   = gp.is_pressed(Button::East)  || gp.is_pressed(Button::North);
-            pstart = gp.is_pressed(Button::Start);
+    fn p2() -> Self {
+        Self { up: Key::W, down: Key::S, left: Key::A, right: Key::D,
+               b1: Key::Num1, b2: Key::Num2, start: Key::Num3 }
+    }
+    fn get(&self, action: usize) -> Key {
+        [self.up, self.down, self.left, self.right, self.b1, self.b2, self.start][action]
+    }
+    fn set(&mut self, action: usize, key: Key) {
+        match action {
+            0 => self.up = key, 1 => self.down = key, 2 => self.left = key,
+            3 => self.right = key, 4 => self.b1 = key, 5 => self.b2 = key,
+            6 => self.start = key, _ => {}
         }
-
-        // --- Keyboard state (read fresh each frame) ---
-        let ku     = window.is_key_down(Key::Up);
-        let kd     = window.is_key_down(Key::Down);
-        let kl     = window.is_key_down(Key::Left);
-        let kr     = window.is_key_down(Key::Right);
-        let kb1    = window.is_key_down(Key::Z);
-        let kb2    = window.is_key_down(Key::X);
-        let kstart = window.is_key_down(Key::Enter);
-
-        // --- Menu hotkeys (one-shot on key-press, no repeat) ---
-
-        // O → Open ROM via native dialog
-        if window.is_key_pressed(Key::O, KeyRepeat::No) {
-            let path = rfd::FileDialog::new()
-                .add_filter("Sega 8-bit ROMs", &["sms", "sg", "gg", "SMS", "SG", "GG"])
-                .pick_file();
-            if let Some(p) = path {
-                if let Some(e) = load_rom(&p, sample_rate, fm_disabled) {
-                    rom_path = Some(p);
-                    emu = Some(e);
-                }
-            }
-        }
-
-        // R → Reset
-        if window.is_key_pressed(Key::R, KeyRepeat::No) {
-            if let Some(ref p) = rom_path.clone() {
-                if let Some(e) = load_rom(p, sample_rate, fm_disabled) {
-                    emu = Some(e);
-                    println!("Reset!");
-                }
-            }
-        }
-
-        // S → Stop
-        if window.is_key_pressed(Key::S, KeyRepeat::No) {
-            emu = None;
-            rom_path = None;
-            fb.iter_mut().for_each(|p| *p = 0);
-        }
-
-        // F → Fullscreen toggle
-        if window.is_key_pressed(Key::F, KeyRepeat::No) {
-            // minifb doesn't have a direct fullscreen toggle, but we can resize to display size
-            // This is a limitation of minifb; a workaround in the future would use a different backend
-        }
-
-        // M → FM toggle (SMS only)
-        if window.is_key_pressed(Key::M, KeyRepeat::No) {
-            let is_gg = emu.as_ref().map(|e| e.is_gg).unwrap_or(false);
-            if !is_gg {
-                fm_disabled = !fm_disabled;
-                println!("FM Sound: {}", if fm_disabled { "OFF (PSG only)" } else { "ON" });
-                // Reset so game re-detects FM hardware
-                if let Some(ref p) = rom_path.clone() {
-                    if let Some(e) = load_rom(p, sample_rate, fm_disabled) {
-                        emu = Some(e);
-                    }
-                }
-            }
-        }
-
-        // Escape → exit (window.is_open() + Q handles exit)
-        if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
-            // On fullscreen, exit fullscreen — minifb limitation: just clear state
-        }
-
-        // --- Mouse (Light Phaser) ---
-        if let Some((win_mx, win_my)) = window.get_mouse_pos(MouseMode::Clamp) {
-            let win_w = window.get_size().0 as f32;
-            let win_h = window.get_size().1 as f32;
-            // Map window mouse pos to emulator screen coords (preserving aspect ratio)
-            let (emu_w, emu_h) = (SMS_W as f32, SMS_H as f32);
-            let aspect = emu_w / emu_h;
-            let win_aspect = win_w / win_h;
-            let (render_w, render_h, off_x, off_y) = if win_aspect > aspect {
-                let h = win_h; let w = h * aspect;
-                (w, h, (win_w - w) / 2.0, 0.0)
-            } else {
-                let w = win_w; let h = w / aspect;
-                (w, h, 0.0, (win_h - h) / 2.0)
-            };
-            let rel_x = win_mx - off_x;
-            let rel_y = win_my - off_y;
-            if rel_x >= 0.0 && rel_x <= render_w { mx = ((rel_x / render_w) * emu_w) as u16; }
-            if rel_y >= 0.0 && rel_y <= render_h { my = ((rel_y / render_h) * emu_h) as u16; }
-        }
-        mouse_pressed = window.get_mouse_down(MouseButton::Left);
-        if mouse_pressed && trigger_frames == 0 { trigger_frames = 6; }
-
-        // --- Emulation step ---
-        if time_debt_us >= SMS_FRAME_US {
-            time_debt_us -= SMS_FRAME_US;
-
-            let trigger_active = mouse_pressed || trigger_frames > 0;
-            if trigger_frames > 0 { trigger_frames -= 1; }
-
-            if let Some(ref mut e) = emu {
-                // Sync FM state
-                e.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = fm_disabled;
-
-                // Send input
-                e.set_input(
-                    ku || pu, kd || pd, kl || pl, kr || pr,
-                    kb1 || pb1 || trigger_active, kb2 || pb2,
-                    kstart || pstart,
-                );
-
-                // Light phaser
-                e.set_lightgun(trigger_active, mx.min(255), my.min(191));
-
-                let (_ready, mut samples) = e.step_frame();
-
-                // Push audio
-                if let Ok(mut buf) = audio_buf.try_lock() {
-                    buf.append(&mut samples);
-                    if buf.len() > 8192 {
-                        let excess = buf.len() - 8192;
-                        buf.drain(0..excess);
-                    }
-                }
-
-                // Render to framebuffer
-                let frame = e.get_framebuffer();
-                let is_gg = e.is_gg;
-                let (render_w, render_h, x_off, y_off) =
-                    if is_gg { (GG_W, GG_H, 48, 24) } else { (SMS_W, SMS_H, 0, 0) };
-
-                // Create a render_w x render_h buffer then scale-blit into fb (SMS_W x SMS_H)
-                // For GG: clear fb to black then blit centered GG output
-                fb.iter_mut().for_each(|p| *p = 0);
-                let blit_x = if is_gg { (SMS_W - GG_W) / 2 } else { 0 };
-                let blit_y = if is_gg { (SMS_H - GG_H) / 2 } else { 0 };
-
-                for y in 0..render_h {
-                    for x in 0..render_w {
-                        let px = frame[(y + y_off) * SMS_W + (x + x_off)];
-                        let r = (px >> 16) & 0xFF;
-                        let g = (px >> 8) & 0xFF;
-                        let b = px & 0xFF;
-                        // minifb uses 0x00RRGGBB
-                        fb[(blit_y + y) * SMS_W + (blit_x + x)] = (r << 16) | (g << 8) | b;
-                    }
-                }
-            } else {
-                // No ROM: show black
-                fb.iter_mut().for_each(|p| *p = 0);
-            }
-        }
-
-        // --- Update window title ---
-        let title = if let Some(ref e) = emu {
-            let is_gg = e.is_gg;
-            let fm_str = if !is_gg && fm_disabled { " [FM OFF]" } else { "" };
-            let rom_str = rom_path.as_ref()
-                .and_then(|p| p.file_stem())
-                .and_then(|n| n.to_str())
-                .unwrap_or("ROM");
-            format!("vibe-sms — {rom_str}{fm_str}  [O]Open [R]Reset [S]Stop [M]FM toggle")
-        } else {
-            "vibe-sms  [O] Open ROM".to_string()
-        };
-        window.set_title(&title);
-
-        // --- Scale fb to window size and display ---
-        let win_w = window.get_size().0;
-        let win_h = window.get_size().1;
-
-        // Scale fb to fit window preserving aspect ratio
-        let scaled = scale_buffer(&fb, SMS_W, SMS_H, win_w, win_h);
-        window.update_with_buffer(&scaled, win_w, win_h).unwrap_or_else(|e| eprintln!("Display error: {e}"));
     }
 }
 
-// ── Scale a ARGB buffer to dst_w×dst_h with nearest-neighbor, letterboxed ───
+#[derive(Clone)]
+struct KeyConfig { p1: PlayerKeys, p2: PlayerKeys }
 
-fn scale_buffer(src: &[u32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Vec<u32> {
-    let mut out = vec![0u32; dst_w * dst_h];
-    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 { return out; }
+impl Default for KeyConfig {
+    fn default() -> Self { Self { p1: PlayerKeys::p1(), p2: PlayerKeys::p2() } }
+}
 
-    let aspect_src = src_w as f64 / src_h as f64;
-    let aspect_dst = dst_w as f64 / dst_h as f64;
+fn key_label(k: Key) -> &'static str {
+    match k {
+        Key::ArrowUp => "↑", Key::ArrowDown => "↓",
+        Key::ArrowLeft => "←", Key::ArrowRight => "→",
+        Key::Enter => "Enter", Key::Space => "Space",
+        Key::Escape => "Esc", Key::Tab => "Tab",
+        Key::Backspace => "Backspace",
+        Key::A => "A", Key::B => "B", Key::C => "C", Key::D => "D",
+        Key::E => "E", Key::F => "F", Key::G => "G", Key::H => "H",
+        Key::I => "I", Key::J => "J", Key::K => "K", Key::L => "L",
+        Key::M => "M", Key::N => "N", Key::O => "O", Key::P => "P",
+        Key::Q => "Q", Key::R => "R", Key::S => "S", Key::T => "T",
+        Key::U => "U", Key::V => "V", Key::W => "W", Key::X => "X",
+        Key::Y => "Y", Key::Z => "Z",
+        Key::Num0 => "0", Key::Num1 => "1", Key::Num2 => "2", Key::Num3 => "3",
+        Key::Num4 => "4", Key::Num5 => "5", Key::Num6 => "6", Key::Num7 => "7",
+        Key::Num8 => "8", Key::Num9 => "9",
+        Key::F1 => "F1", Key::F2 => "F2", Key::F3 => "F3", Key::F4 => "F4",
+        Key::F5 => "F5", Key::F6 => "F6", Key::F7 => "F7", Key::F8 => "F8",
+        Key::F9 => "F9", Key::F10 => "F10", Key::F11 => "F11", Key::F12 => "F12",
+        _ => "?",
+    }
+}
 
-    let (render_w, render_h, x_off, y_off) = if aspect_dst > aspect_src {
-        let h = dst_h; let w = (h as f64 * aspect_src) as usize;
-        (w, h, (dst_w - w) / 2, 0)
-    } else {
-        let w = dst_w; let h = (w as f64 / aspect_src) as usize;
-        (w, h, 0, (dst_h - h) / 2)
+// ── Pad state ──────────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct PadState { up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool }
+
+// ── App ────────────────────────────────────────────────────────────────────────
+
+struct VibeApp {
+    emu:         Option<Emulator>,
+    rom_path:    Option<PathBuf>,
+    fm_disabled: bool,
+
+    audio_buf:   Arc<Mutex<Vec<f32>>>,
+    sample_rate: f32,
+    _stream:     Option<Stream>,
+
+    texture:     Option<TextureHandle>,
+    fb:          Vec<u32>,
+
+    gilrs:       Gilrs,
+    pad:         PadState,
+    key_config:  KeyConfig,
+    mx: u16, my: u16,
+    trigger_frames: u8,
+
+    last_frame:   Instant,
+    time_debt_us: i64,
+
+    // UI state
+    show_key_config: bool,
+    show_about:      bool,
+    show_fm_notice:  bool,
+    binding:         Option<(usize, usize)>, // (player 0/1, action 0-6)
+    window_title:    String,
+}
+
+impl VibeApp {
+    fn new(_cc: &eframe::CreationContext<'_>, initial_rom: Option<String>) -> Self {
+        let (audio_buf, sample_rate, stream) = build_audio_stream();
+        let gilrs = Gilrs::new().expect("Failed to init gilrs");
+        let mut app = Self {
+            emu: None, rom_path: None, fm_disabled: false,
+            audio_buf, sample_rate, _stream: stream,
+            texture: None, fb: vec![0u32; SMS_W * SMS_H],
+            gilrs, pad: PadState::default(), key_config: KeyConfig::default(),
+            mx: 0, my: 0, trigger_frames: 0,
+            last_frame: Instant::now(), time_debt_us: 0,
+            show_key_config: false, show_about: false, show_fm_notice: false,
+            binding: None,
+            window_title: "vibe-sms".to_string(),
+        };
+        if let Some(path_str) = initial_rom {
+            let p = PathBuf::from(path_str);
+            if let Some(e) = load_rom(&p, app.sample_rate, app.fm_disabled) {
+                app.rom_path = Some(p);
+                app.emu = Some(e);
+            }
+        }
+        app
+    }
+}
+
+// ── App::update ────────────────────────────────────────────────────────────────
+
+impl eframe::App for VibeApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Timing ────────────────────────────────────────────────────────────
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_frame).as_micros().min(50_000) as i64;
+        self.last_frame = now;
+        self.time_debt_us = (self.time_debt_us + elapsed).min(SMS_FRAME_US * 2);
+
+        // ── Gamepad ───────────────────────────────────────────────────────────
+        while let Some(GilrsEvent { id, .. }) = self.gilrs.next_event() {
+            let gp = self.gilrs.gamepad(id);
+            self.pad.up    = gp.is_pressed(Button::DPadUp);
+            self.pad.down  = gp.is_pressed(Button::DPadDown);
+            self.pad.left  = gp.is_pressed(Button::DPadLeft);
+            self.pad.right = gp.is_pressed(Button::DPadRight);
+            self.pad.b1    = gp.is_pressed(Button::South) || gp.is_pressed(Button::West);
+            self.pad.b2    = gp.is_pressed(Button::East)  || gp.is_pressed(Button::North);
+            self.pad.start = gp.is_pressed(Button::Start);
+        }
+
+        // ── Key binding capture ───────────────────────────────────────────────
+        if self.binding.is_some() {
+            if let Some(key) = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, .. } => Some(*key),
+                    _ => None,
+                })
+            }) {
+                if let Some((player, action)) = self.binding.take() {
+                    if player == 0 { self.key_config.p1.set(action, key); }
+                    else           { self.key_config.p2.set(action, key); }
+                }
+            }
+        }
+
+        // ── Read keyboard + mouse state ───────────────────────────────────────
+        let is_gg = self.emu.as_ref().map(|e| e.is_gg).unwrap_or(false);
+        let (ku, kd, kl, kr, kb1, kb2, kstart, mouse_down) = ctx.input(|i| {
+            let kc = &self.key_config; let p = &self.pad;
+            (
+                i.key_down(kc.p1.up)    || p.up,
+                i.key_down(kc.p1.down)  || p.down,
+                i.key_down(kc.p1.left)  || p.left,
+                i.key_down(kc.p1.right) || p.right,
+                i.key_down(kc.p1.b1)   || p.b1,
+                i.key_down(kc.p1.b2)   || p.b2,
+                i.key_down(kc.p1.start) || p.start,
+                i.pointer.primary_down(),
+            )
+        });
+        if mouse_down && self.trigger_frames == 0 { self.trigger_frames = 6; }
+
+        // ── Menu bar ──────────────────────────────────────────────────────────
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                // ── Emulator ──────────────────────────────────────────────────
+                ui.menu_button("Emulator", |ui| {
+                    if ui.button("Open ROM…").clicked() {
+                        ui.close();
+                        let path = rfd::FileDialog::new()
+                            .add_filter("Sega 8-bit ROMs", &["sms", "sg", "gg", "SMS", "SG", "GG"])
+                            .pick_file();
+                        if let Some(p) = path {
+                            if let Some(e) = load_rom(&p, self.sample_rate, self.fm_disabled) {
+                                self.rom_path = Some(p);
+                                self.emu = Some(e);
+                            }
+                        }
+                    }
+                    ui.separator();
+                    ui.add_enabled_ui(self.rom_path.is_some(), |ui| {
+                        if ui.button("Reset").clicked() {
+                            ui.close();
+                            if let Some(ref p) = self.rom_path.clone() {
+                                self.emu = load_rom(p, self.sample_rate, self.fm_disabled);
+                            }
+                        }
+                        if ui.button("Stop").clicked() {
+                            ui.close();
+                            self.emu = None;
+                            self.rom_path = None;
+                            self.fb.iter_mut().for_each(|p| *p = 0);
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                // ── Configuration ─────────────────────────────────────────────
+                ui.menu_button("Configuration", |ui| {
+                    if ui.button("Controls…").clicked() {
+                        ui.close();
+                        self.show_key_config = true;
+                    }
+                    ui.separator();
+                    let mut fm_on = !self.fm_disabled;
+                    let fm_changed = ui.add_enabled(!is_gg, egui::Checkbox::new(&mut fm_on, "FM Sound")).changed();
+                    if fm_changed {
+                        self.fm_disabled = !fm_on;
+                        self.show_fm_notice = true;
+                    }
+                    if is_gg {
+                        ui.label(egui::RichText::new("(SMS only)").small().color(egui::Color32::GRAY));
+                    }
+                });
+
+                // ── About ─────────────────────────────────────────────────────
+                ui.menu_button("About", |ui| {
+                    if ui.button("About vibe-sms…").clicked() {
+                        ui.close();
+                        self.show_about = true;
+                    }
+                });
+
+                // Title right-aligned — must be LAST (consumes remaining space)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(&self.window_title).strong());
+                });
+            });
+        });
+
+        // ── Central panel — emulator display ──────────────────────────────────
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let panel_rect = ui.max_rect();
+            let (emu_w, emu_h) = if is_gg { (GG_W as f32, GG_H as f32) } else { (SMS_W as f32, SMS_H as f32) };
+            let render_rect = letterbox_rect(panel_rect, emu_w / emu_h);
+
+            // Mouse → light phaser coords
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let rx = (pos.x - render_rect.min.x) / render_rect.width();
+                let ry = (pos.y - render_rect.min.y) / render_rect.height();
+                if (0.0..=1.0).contains(&rx) { self.mx = (rx * emu_w) as u16; }
+                if (0.0..=1.0).contains(&ry) { self.my = (ry * emu_h) as u16; }
+            }
+
+            // Emulation step
+            if self.time_debt_us >= SMS_FRAME_US {
+                self.time_debt_us -= SMS_FRAME_US;
+                let trigger_active = self.trigger_frames > 0;
+                if self.trigger_frames > 0 { self.trigger_frames -= 1; }
+
+                if let Some(ref mut e) = self.emu {
+                    e.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = self.fm_disabled;
+                    e.set_input(ku, kd, kl, kr, kb1 || trigger_active, kb2, kstart);
+                    e.set_lightgun(trigger_active, self.mx.min(255), self.my.min(191));
+
+                    let (_, mut samples) = e.step_frame();
+                    if let Ok(mut buf) = self.audio_buf.try_lock() {
+                        buf.append(&mut samples);
+                        if buf.len() > 8192 { let excess = buf.len() - 8192; buf.drain(0..excess); }
+                    }
+
+                    // Blit framebuffer
+                    let frame = e.get_framebuffer();
+                    let (rw, rh, xo, yo) = if is_gg { (GG_W, GG_H, 48, 24) } else { (SMS_W, SMS_H, 0, 0) };
+                    let (bx, by) = if is_gg { ((SMS_W - GG_W) / 2, (SMS_H - GG_H) / 2) } else { (0, 0) };
+                    self.fb.iter_mut().for_each(|p| *p = 0);
+                    for y in 0..rh {
+                        for x in 0..rw {
+                            let px = frame[(y + yo) * SMS_W + (x + xo)];
+                            self.fb[(by + y) * SMS_W + (bx + x)] = px & 0x00FF_FFFF;
+                        }
+                    }
+                } else {
+                    self.fb.iter_mut().for_each(|p| *p = 0);
+                }
+            }
+
+            // Convert XRGB → RGBA8 and upload to GPU texture
+            let rgba: Vec<u8> = self.fb.iter().flat_map(|&p| {
+                [(p >> 16) as u8, (p >> 8) as u8, p as u8, 255u8]
+            }).collect();
+            let img = ColorImage::from_rgba_unmultiplied([SMS_W, SMS_H], &rgba);
+            match &mut self.texture {
+                Some(t) => t.set(img, TextureOptions::NEAREST),
+                None    => self.texture = Some(ctx.load_texture("fb", img, TextureOptions::NEAREST)),
+            }
+
+            // Draw letterboxed
+            if let Some(ref tex) = self.texture {
+                ui.painter().image(
+                    tex.id(), render_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        });
+
+        // ── Controls window ───────────────────────────────────────────────────
+        let mut show_key_config = self.show_key_config;
+        egui::Window::new("Controls")
+            .open(&mut show_key_config)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                const ACTIONS: &[&str] = &["Up", "Down", "Left", "Right", "Button 1", "Button 2", "Start/Pause"];
+                egui::Grid::new("ctrl_grid").num_columns(3).striped(true).show(ui, |ui| {
+                    ui.strong("Action"); ui.strong("Player 1"); ui.strong("Player 2");
+                    ui.end_row();
+                    for (ai, &name) in ACTIONS.iter().enumerate() {
+                        ui.label(name);
+                        for pi in 0..2usize {
+                            let keys = if pi == 0 { &self.key_config.p1 } else { &self.key_config.p2 };
+                            let waiting = self.binding == Some((pi, ai));
+                            let lbl = if waiting { "Press any key…".to_string() } else { key_label(keys.get(ai)).to_string() };
+                            if ui.button(lbl).clicked() {
+                                self.binding = if waiting { None } else { Some((pi, ai)) };
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                if ui.button("Reset to defaults").clicked() { self.key_config = KeyConfig::default(); }
+            });
+        self.show_key_config = show_key_config;
+
+        // ── FM notice ─────────────────────────────────────────────────────────
+        if self.show_fm_notice {
+            egui::Window::new("FM Sound Changed")
+                .collapsible(false).resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label("FM sound setting changed.");
+                    ui.label("Reset the game (Emulator → Reset) for the change to take effect.");
+                    ui.separator();
+                    if ui.button("  OK  ").clicked() { self.show_fm_notice = false; }
+                });
+        }
+
+        // ── About window ──────────────────────────────────────────────────────
+        let mut show_about = self.show_about;
+        egui::Window::new("About vibe-sms")
+            .open(&mut show_about)
+            .collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.heading("vibe-sms");
+                ui.label("Version 0.1.0");
+                ui.separator();
+                ui.label("Sega Master System / Game Gear emulator — written in Rust.");
+                ui.label("Supports FM sound (YM2413), PSG (SN76489), gamepad, and Light Phaser.");
+                ui.separator();
+                ui.label("Built with:  egui/eframe · cpal · gilrs · z80");
+                ui.separator();
+                ui.label("Created using Google Antigravity powered by Gemini.");
+            });
+        self.show_about = show_about;
+
+        // ── Window title ──────────────────────────────────────────────────────
+        // Compute what the title should be
+        let desired_title = "vibe-sms".to_string();
+        // Update and send every frame — Wayland async delivery needs this
+        self.window_title = desired_title;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title.clone()));
+
+        // Pace repaints to ~60 fps
+        ctx.request_repaint_after(Duration::from_micros(SMS_FRAME_US as u64));
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Returns the largest rect inside `panel` that preserves `aspect` (w/h).
+fn letterbox_rect(panel: egui::Rect, aspect: f32) -> egui::Rect {
+    let pw = panel.width();
+    let ph = panel.height();
+    let (w, h) = if pw / ph > aspect { (ph * aspect, ph) } else { (pw, pw / aspect) };
+    egui::Rect::from_center_size(panel.center(), egui::vec2(w, h))
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────────
+
+pub fn launch_frontend(initial_rom: Option<String>) {
+    // Load icon from assets at compile time
+    let icon = load_icon();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("vibe-sms")
+        .with_inner_size([512.0, 406.0])
+        .with_resizable(true);
+    if let Some(icon) = icon { viewport = viewport.with_icon(icon); }
+
+    let native_options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
     };
 
-    for y in 0..render_h {
-        let src_y = (y * src_h) / render_h;
-        for x in 0..render_w {
-            let src_x = (x * src_w) / render_w;
-            let pixel = src[src_y * src_w + src_x];
-            out[(y + y_off) * dst_w + (x + x_off)] = pixel;
-        }
-    }
-    out
+    eframe::run_native(
+        "vibe-sms",
+        native_options,
+        Box::new(|cc| Ok(Box::new(VibeApp::new(cc, initial_rom)))),
+    ).expect("Failed to run eframe");
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../../assets/icon.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::IconData { rgba: img.into_raw(), width: w, height: h })
 }

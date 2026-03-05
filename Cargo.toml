@@ -14,8 +14,10 @@ cpal = "0.15.3"
 gilrs = "0.11.0"
 
 # Frontend — cross-platform (Linux/Windows/macOS)
-# minifb: software framebuffer window — no GPU driver requirements, zero runtime deps on Windows
-minifb = "0.28"
+# eframe: egui-based UI with glow (OpenGL) backend
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+# Image decoding for window icon
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Native file dialogs (Open ROM)
 # Linux: use GTK3 backend (avoids the xdg-portal/wayland-sys dependency chain)
