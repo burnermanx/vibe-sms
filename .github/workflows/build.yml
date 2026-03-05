@@ -106,8 +106,34 @@ jobs:
       - name: Package as zip (macOS)
         if: runner.os == 'macOS'
         run: |
-          zip -j "${{ matrix.zip_name }}" \
-            "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          APP_NAME="vibe-sms.app"
+          mkdir -p "$APP_NAME/Contents/MacOS"
+          mkdir -p "$APP_NAME/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "$APP_NAME/Contents/MacOS/"
+          cp "assets/icon.icns" "$APP_NAME/Contents/Resources/AppIcon.icns"
+          cat > "$APP_NAME/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>vibe-sms</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.burnermanx.vibesms</string>
+              <key>CFBundleName</key>
+              <string>vibe-sms</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>0.1.0</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13.0</string>
+          </dict>
+          </plist>
+          EOF
+          zip -qr "${{ matrix.zip_name }}" "$APP_NAME"
 
       # Upload binary artifact — Linux: raw binary, Windows/macOS: zip
       - name: Upload build artifact (Linux)
@@ -145,13 +171,9 @@ jobs:
           EOF
           cp AppDir/vibe-sms.desktop AppDir/usr/share/applications/
 
-          # ── Icon via ImageMagick ──────────────────────────────────────────
-          convert -size 256x256 xc:'#1a1a2e' \
-            -fill '#e94560' -draw "roundrectangle 20,20 236,236 30,30" \
-            -fill white -font DejaVu-Sans-Bold -pointsize 56 \
-            -gravity center -annotate 0 "SMS" \
-            AppDir/vibe-sms.png
-          cp AppDir/vibe-sms.png AppDir/usr/share/icons/hicolor/256x256/apps/
+          # ── Icon ──────────────────────────────────────────────────────────
+          cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/vibe-sms.png
+          cp assets/icon.png AppDir/vibe-sms.png
 
           # ── AppRun script ─────────────────────────────────────────────────
           cat > AppDir/AppRun << 'EOF'
