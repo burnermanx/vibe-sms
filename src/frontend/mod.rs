@@ -427,7 +427,7 @@ impl eframe::App for VibeApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.heading("vibe-sms");
-                ui.label("Version 0.1.0");
+                ui.label("Version 0.1.1");
                 ui.separator();
                 ui.label("Sega Master System / Game Gear emulator — written in Rust.");
                 ui.label("Supports FM sound (YM2413), PSG (SN76489), gamepad, and Light Phaser.");
