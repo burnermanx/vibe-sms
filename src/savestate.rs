@@ -9,8 +9,6 @@
 const MAGIC: &[u8; 4] = b"VSMS";
 const VERSION: u8 = 2;
 
-// ── Sub-state structs ─────────────────────────────────────────────────────────
-
 pub struct CpuState {
     pub af: u16, pub bc: u16, pub de: u16, pub hl: u16,
     pub af_alt: u16, pub bc_alt: u16, pub de_alt: u16, pub hl_alt: u16,
@@ -76,8 +74,6 @@ pub struct SaveState {
     pub timing: EmuTimingState,
 }
 
-// ── Binary serializer ─────────────────────────────────────────────────────────
-
 struct Ser(Vec<u8>);
 
 impl Ser {
@@ -91,8 +87,6 @@ impl Ser {
     fn bool(&mut self, v: bool) { self.0.push(v as u8); }
     fn bytes(&mut self, v: &[u8]) { self.0.extend_from_slice(v); }
 }
-
-// ── Binary deserializer ───────────────────────────────────────────────────────
 
 struct De<'a> { data: &'a [u8], pos: usize }
 
@@ -135,8 +129,6 @@ impl<'a> De<'a> {
         Some(arr)
     }
 }
-
-// ── SaveState serialization ───────────────────────────────────────────────────
 
 impl SaveState {
     pub fn serialize(&self) -> Vec<u8> {

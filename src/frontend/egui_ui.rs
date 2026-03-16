@@ -80,13 +80,13 @@ fn draw_dialogs(
     is_gg: bool,
     is_sg: bool,
 ) {
-    // ── Linux-only egui menu bar ─────────────────────────────────────────────────
+    // Linux menu bar
     #[cfg(target_os = "linux")]
     draw_linux_menu(ctx, d, menu_tx, is_gg, is_sg);
     #[cfg(not(target_os = "linux"))]
     { d.menu_bar_height = 0.0; }
 
-    // ── Slot HUD overlay ─────────────────────────────────────────────────────────
+    // Slot HUD
     if d.show_slot_hud > 0 {
         d.show_slot_hud -= 1;
         let alpha = ((d.show_slot_hud as f32 / 90.0) * 220.0) as u8;
@@ -112,7 +112,7 @@ fn draw_dialogs(
         );
     }
 
-    // ── Controls window ──────────────────────────────────────────────────────────
+    // Controls
     let mut show_key_config = d.show_key_config;
     egui::Window::new("Controls")
         .open(&mut show_key_config)
@@ -144,7 +144,7 @@ fn draw_dialogs(
         });
     d.show_key_config = show_key_config;
 
-    // ── FM notice ────────────────────────────────────────────────────────────────
+    // FM notice
     if d.show_fm_notice {
         egui::Window::new("FM Sound Changed")
             .collapsible(false).resizable(false)
@@ -157,7 +157,7 @@ fn draw_dialogs(
             });
     }
 
-    // ── About window ─────────────────────────────────────────────────────────────
+    // About
     let mut show_about = d.show_about;
     egui::Window::new("About vibe-sms")
         .open(&mut show_about)

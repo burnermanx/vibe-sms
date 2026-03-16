@@ -108,8 +108,6 @@ impl Eeprom93C46 {
         self.dirty = true;
     }
 
-    // ── Internos ──────────────────────────────────────────────────────────────
-
     fn reset_state(&mut self) {
         self.state = State::Start;
         self.position = 0;
@@ -252,13 +250,11 @@ impl Eeprom93C46 {
     }
 }
 
-// ── Testes ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Helpers do protocolo Microwire ────────────────────────────────────────
+    // Microwire helpers
 
     /// Ativa CS (começa transação).
     fn begin_tx(e: &mut Eeprom93C46) {
@@ -326,8 +322,6 @@ mod tests {
         end_tx(e);
         word
     }
-
-    // ── Testes ────────────────────────────────────────────────────────────────
 
     #[test]
     fn initial_data_is_erased() {

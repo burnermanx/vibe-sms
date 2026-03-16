@@ -67,8 +67,6 @@ impl Psg {
         }
     }
 
-    // ── Save-state helpers ────────────────────────────────────────────────────
-
     pub fn get_state(&self) -> crate::savestate::PsgState {
         crate::savestate::PsgState {
             registers:  self.registers,
@@ -234,13 +232,9 @@ impl Psg {
     }
 }
 
-// ── Testes ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Protocolo latch/data ──────────────────────────────────────────────────
 
     #[test]
     fn latch_byte_selects_tone0_low_nibble() {

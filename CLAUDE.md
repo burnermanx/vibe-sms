@@ -1,81 +1,88 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project
 
-## Project Overview
+**vibe-sms** — Sega Master System, Game Gear, SG-1000 and SC-3000 emulator in Rust.
+Hardware-accurate Z80 CPU, VDP (TMS9918/315-5246), PSG (SN76489), FM (YM2413), light gun, gamepad.
 
-**vibe-sms** is a Sega Master System and Game Gear emulator written in Rust. It supports both platforms with hardware-accurate video (VDP), audio (PSG + FM/YM2413), input (keyboard, gamepad, light gun), and a native GUI via egui/eframe.
-
-## Build & Run Commands
+## Commands
 
 ```bash
-# Run in release mode (recommended — debug is too slow for real-time emulation)
-cargo run --release
-
-# Pass a ROM directly
-cargo run --release -- path/to/game.sms
-cargo run --release -- path/to/game.gg
-
-# Build only
+cargo run --release                        # run (debug is too slow for realtime)
+cargo run --release -- path/to/game.sms   # load ROM at startup
 cargo build --release
-
-# Check for errors without producing an artifact
 cargo check
-
-# Run clippy lints
 cargo clippy
-```
-
-```bash
-# Run unit tests
 cargo test
 ```
 
-### Linux Build Dependencies
+### Linux build deps (Ubuntu/Debian)
 
 ```bash
-# Arch
-sudo pacman -S base-devel rustup
-
-# Ubuntu/Debian
 sudo apt install build-essential cargo rustc \
-  libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev pkg-config
+  libasound2-dev \
+  libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+  libxkbcommon-dev libgl1-mesa-dev \
+  libgtk-3-dev libxdo-dev libwayland-dev \
+  libudev-dev pkg-config
+```
+
+### Arch
+
+```bash
+sudo pacman -S base-devel rustup
 ```
 
 ## Architecture
 
-The emulation core is fully decoupled from the frontend. Data flows: `frontend/mod.rs` → `core.rs` → `bus.rs` → hardware modules.
-
-### Core Data Flow
+Emulation core is fully decoupled from the frontend.
 
 ```
 Emulator (core.rs)
   └── Z80<System> (z80 crate)
         └── System (bus.rs)
               └── Bus (bus.rs)
-                    ├── Mmu (mmu.rs)       — ROM paging, SRAM
-                    ├── Vdp (vdp.rs)       — TMS9918/315-5246 video
-                    ├── Joypad (joypad.rs) — input + light gun
+                    ├── Mmu (mmu.rs)            — ROM paging, SRAM, EEPROM
+                    ├── Vdp (vdp.rs)            — TMS9918/315-5246 video
+                    ├── Joypad (joypad.rs)      — input + light gun (TH pin)
                     └── AudioMixer (audio/mixer.rs)
-                          ├── Psg (audio/psg.rs)    — SN76489
-                          └── Fm (audio/fm.rs)
+                          ├── Psg (audio/psg.rs)     — SN76489
+                          └── Fm  (audio/fm.rs)
                                 └── Ym2413 (audio/ym2413.rs) — OPLL FM
 ```
 
-### Key Architectural Points
+### Frontend stack
 
-- **`Bus` is wrapped in `RefCell<Bus>` inside `System`** — because the `z80` crate requires `Z80_io` trait methods to take `&self`/`&mut self`, interior mutability is used extensively. Expect `bus.borrow()` / `bus.borrow_mut()` patterns everywhere in `core.rs`.
+```
+src/frontend/
+├── mod.rs       — launch_frontend(); GTK init (Linux); cpal audio stream
+├── app.rs       — VibeApp: ApplicationHandler<MenuAction>; GL init; render loop
+├── renderer.rs  — glow/OpenGL quad shader; 256×192 RGBA texture blit; letterbox
+├── egui_ui.rs   — EguiState (egui-winit + egui-glow); dialogs; Linux menu bar
+├── menu.rs      — MenuAction enum; muda native menus (macOS/Windows only)
+└── input.rs     — PlayerKeys (winit::KeyCode); KeyConfig; PadState
+```
 
-- **Platform detection**: ROM file extension determines platform — `.gg` → Game Gear, `.sms`/`.sg` → Master System. The `is_gg` flag propagates through `Emulator`, `Bus`, `Vdp`, `Joypad`, and `AudioMixer`.
+**Key libs:** `winit 0.30` (window/events) · `glutin 0.32` (GL context/EGL/GLX) · `glow 0.16` (OpenGL) · `muda 0.17` (native OS menus) · `egui 0.33` + `egui-winit` + `egui_glow` (dialogs only) · `cpal` (audio) · `gilrs` (gamepad) · `rfd` (file dialog, gtk3 on Linux)
 
-- **Frame loop** (`core.rs::step_frame`): Runs one full NTSC frame (262 lines × 228 cycles = 59,736 cycles). Per-scanline: renders VDP line 0–191, fires line interrupts, generates audio samples interleaved with CPU execution. VBlank fires at line 192.
+### Critical implementation notes
 
-- **Frontend** (`frontend/mod.rs`): Uses `eframe` (egui + glow/OpenGL). The `VibeApp::update()` method handles timing (time-debt accumulator for frame pacing), gamepad polling via `gilrs`, keyboard input, and blitting the 256×192 XRGB framebuffer to an egui texture. File dialogs use `rfd` (GTK3 backend on Linux).
+**Interior mutability everywhere in core**: `Bus` is `RefCell<Bus>` inside `System` because the `z80` crate's `Z80_io` trait takes `&self`. Expect `bus.borrow_mut()` throughout `core.rs`.
 
-- **Audio**: `cpal` opens the default output device and drains a shared `Arc<Mutex<Vec<f32>>>` ring buffer. Emulator pushes interleaved stereo f32 samples into the buffer each frame.
+**Platform detection**: ROM extension → `.gg` = Game Gear, `.sg` = SG-1000, `.sc` = SC-3000, else Master System. The `Platform` enum propagates through `Emulator`, `Bus`, `Vdp`, `Joypad`, `AudioMixer`.
 
-- **FM toggle**: Toggling FM sound sets `user_disabled` on `AudioMixer.fm`; the FM detection port ($F0–$F2) is exposed to the Z80 so games can auto-detect FM capability. A reset is required for the change to take effect.
+**Frame loop** (`core.rs::step_frame`): 262 lines × 228 cycles = 59,736 cycles/frame (NTSC). VDP renders lines 0–191; line interrupts fire per-scanline; VBlank at line 192. Audio samples are generated interleaved with CPU execution.
 
-- **Light Phaser**: Mouse position maps to emulated screen coords. When the pixel rendered at that position exceeds brightness threshold 750 (sum of R+G+B), the H/V counters are latched and the TH pin is pulled low.
+**Render loop** (`app.rs::render`): time-debt accumulator drives emulation at 60 Hz. Each frame: step emulator → blit framebuffer → `renderer.draw` (OpenGL) → `egui_state.run_frame` (dialogs on top) → `surface.swap_buffers`.
 
-- **Assets**: `assets/icon.png` is embedded at compile time via `include_bytes!` in `frontend/mod.rs`.
+**GL shutdown order** (`app.rs::shutdown_gl`): must free `Renderer` → `EguiState` (Painter) → `GlState` in that order while the context is current, or SIGSEGV on exit.
+
+**File dialog on Linux/Wayland**: `rfd::AsyncFileDialog` spawned via `glib::MainContext::default().spawn_local()`; the glib context is pumped each frame in `about_to_wait()`. GTK is single-threaded — never call rfd from a background thread.
+
+**FM/PSG balance**: YM2413 per-channel output tops at ~±0.063 after /32768 normalisation; PSG MAX_VOLUME = 0.25. Mixer applies `FM_GAIN = 4.0` before summing.
+
+**Light Phaser**: mouse position maps to emulated screen coords. When the rendered pixel exceeds brightness threshold 750 (R+G+B sum), H/V counters are latched and TH pin pulled low.
+
+**Assets**: `assets/icon.png` embedded at compile time via `include_bytes!` in `app.rs`.
+
+**egui menu bar (Linux only)**: rendered by `egui_ui.rs::draw_linux_menu`; height stored in `DialogState::menu_bar_height` and converted to physical pixels to offset the OpenGL letterbox rect.

@@ -36,8 +36,6 @@ const GG_W:  usize = 160;
 const GG_H:  usize = 144;
 const SMS_FRAME_US: i64 = 16_683;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn sram_path(p: &PathBuf) -> PathBuf { p.with_extension("sav") }
 fn eeprom_path(p: &PathBuf) -> PathBuf { p.with_extension("eep") }
 
@@ -119,8 +117,6 @@ pub fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<E
     }
 }
 
-// ── GL init ───────────────────────────────────────────────────────────────────
-
 struct GlState {
     ctx:     PossiblyCurrentContext,
     surface: Surface<WindowSurface>,
@@ -183,8 +179,6 @@ fn init_gl(window: &Window) -> GlState {
 
     GlState { ctx, surface, gl }
 }
-
-// ── VibeApp ───────────────────────────────────────────────────────────────────
 
 pub struct VibeApp {
     // Pre-init
@@ -269,13 +263,13 @@ impl VibeApp {
         let window = match self.window.as_ref() { Some(w) => w.clone(), None => return };
         let gl = match self.gl_state.as_ref().map(|s| s.gl.clone()) { Some(g) => g, None => return };
 
-        // ── Timing ───────────────────────────────────────────────────────────
+        // Timing
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame).as_micros().min(50_000) as i64;
         self.last_frame = now;
         self.time_debt_us = (self.time_debt_us + elapsed).min(SMS_FRAME_US * 2);
 
-        // ── Gamepad ──────────────────────────────────────────────────────────
+        // Gamepad input
         while let Some(GilrsEvent { id, .. }) = self.gilrs.next_event() {
             let gp = self.gilrs.gamepad(id);
             self.pad.up    = gp.is_pressed(Button::DPadUp);
@@ -300,7 +294,7 @@ impl VibeApp {
         let kb2    = pk.contains(&kc.p1.b2)    || p.b2;
         let kstart = pk.contains(&kc.p1.start) || p.start;
 
-        // ── Emulation step ───────────────────────────────────────────────────
+        // Step emulation
         if self.time_debt_us >= SMS_FRAME_US {
             self.time_debt_us -= SMS_FRAME_US;
             let trigger_active = self.trigger_frames > 0;
@@ -342,7 +336,7 @@ impl VibeApp {
             }
         }
 
-        // ── GPU render ───────────────────────────────────────────────────────
+        // Render frame
         if let Some(ref renderer) = self.renderer {
             renderer.upload_frame(&gl, &self.fb);
             let size = window.inner_size();
@@ -351,7 +345,7 @@ impl VibeApp {
             renderer.draw(&gl, (size.width, size.height), is_gg, top_px);
         }
 
-        // ── egui overlay ─────────────────────────────────────────────────────
+        // UI overlay
         let proxy = self.proxy.clone();
         self.dialog.rom_loaded = self.rom_path.is_some();
         if let Some(ref mut egui_state) = self.egui_state {
@@ -362,7 +356,7 @@ impl VibeApp {
             );
         }
 
-        // ── Swap ─────────────────────────────────────────────────────────────
+        // Present
         if let Some(ref state) = self.gl_state {
             state.surface.swap_buffers(&state.ctx).ok();
         }
@@ -489,8 +483,6 @@ impl VibeApp {
         self.window = None;
     }
 }
-
-// ── ApplicationHandler ────────────────────────────────────────────────────────
 
 impl ApplicationHandler<MenuAction> for VibeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

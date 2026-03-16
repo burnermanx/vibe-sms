@@ -206,8 +206,6 @@ impl Emulator {
         bus.joypad.mouse_y = y;
     }
 
-    // ── Save state ────────────────────────────────────────────────────────────
-
     pub fn save_state(&self) -> crate::savestate::SaveState {
         use crate::savestate::*;
         let bus = self.cpu.io.bus.borrow();
@@ -284,8 +282,6 @@ impl Emulator {
         self.frame_cycles          = t.frame_cycles;
     }
 
-    // ── EEPROM persistence ────────────────────────────────────────────────────
-
     pub fn has_eeprom(&self) -> bool {
         self.cpu.io.bus.borrow().mmu.eeprom.is_some()
     }
@@ -311,8 +307,6 @@ impl Emulator {
             eeprom.dirty = false;
         }
     }
-
-    // ── SRAM persistence ──────────────────────────────────────────────────────
 
     pub fn is_sram_dirty(&self) -> bool {
         self.cpu.io.bus.borrow().mmu.sram_dirty
