@@ -50,6 +50,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Strip leading 'v' from the tag (v0.2.0 → 0.2.0), patch Cargo.toml so
+      # that env!("CARGO_PKG_VERSION") and the macOS bundle version are correct.
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          sed -i.bak 's/^version = "[^"]*"/version = "'"$VERSION"'"/' Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Cargo.toml version set to $VERSION"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -127,7 +140,7 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>0.1.0</string>
+              <string>${RELEASE_VERSION:-0.1.0}</string>
               <key>LSMinimumSystemVersion</key>
               <string>10.13.0</string>
           </dict>
