@@ -1,0 +1,9 @@
+[package]
+name = "z80"
+version = "1.0.2"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "z80"
+path = "lib.rs"

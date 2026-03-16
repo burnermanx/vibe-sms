@@ -26,7 +26,10 @@ cargo check
 cargo clippy
 ```
 
-There are no tests in this project currently.
+```bash
+# Run unit tests
+cargo test
+```
 
 ### Linux Build Dependencies
 

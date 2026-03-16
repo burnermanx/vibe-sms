@@ -67,6 +67,30 @@ impl Psg {
         }
     }
 
+    // ── Save-state helpers ────────────────────────────────────────────────────
+
+    pub fn get_state(&self) -> crate::savestate::PsgState {
+        crate::savestate::PsgState {
+            registers:  self.registers,
+            latch:      self.latch,
+            counters:   self.counters,
+            polarity:   self.polarity,
+            noise_lfsr: self.noise_lfsr,
+            clock_frac: self.clock_frac,
+            stereo:     self.stereo,
+        }
+    }
+
+    pub fn load_state(&mut self, s: &crate::savestate::PsgState) {
+        self.registers  = s.registers;
+        self.latch      = s.latch;
+        self.counters   = s.counters;
+        self.polarity   = s.polarity;
+        self.noise_lfsr = s.noise_lfsr;
+        self.clock_frac = s.clock_frac;
+        self.stereo     = s.stereo;
+    }
+
     pub fn write_data(&mut self, value: u8) {
         if value & 0x80 != 0 {
             // Latch/Data byte (1ccctdddd)

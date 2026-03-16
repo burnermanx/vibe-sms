@@ -105,6 +105,41 @@ fn load_eeprom_into(emu: &Emulator, rom_path: &PathBuf) {
     }
 }
 
+// ── Save-state helpers ──────────────────────────────────────────────────────────
+
+fn savestate_path(rom_path: &PathBuf, slot: usize) -> PathBuf {
+    let stem = rom_path.file_stem().and_then(|s| s.to_str()).unwrap_or("game");
+    let ext  = rom_path.extension().and_then(|s| s.to_str()).unwrap_or("sms");
+    let name = format!("{}.{}.ss{}", stem, ext, slot);
+    rom_path.with_file_name(name)
+}
+
+fn save_state_to_slot(emu: &crate::core::Emulator, rom_path: &PathBuf, slot: usize) {
+    let state = emu.save_state();
+    let bytes = state.serialize();
+    let path  = savestate_path(rom_path, slot);
+    match std::fs::write(&path, &bytes) {
+        Ok(_) => println!("Save state written to slot {} ({})", slot, path.display()),
+        Err(e) => eprintln!("Failed to write save state: {e}"),
+    }
+}
+
+fn load_state_from_slot(emu: &mut crate::core::Emulator, rom_path: &PathBuf, slot: usize) {
+    let path = savestate_path(rom_path, slot);
+    match std::fs::read(&path) {
+        Ok(data) => {
+            match crate::savestate::SaveState::deserialize(&data) {
+                Some(state) => {
+                    emu.load_state(state);
+                    println!("Save state loaded from slot {} ({})", slot, path.display());
+                }
+                None => eprintln!("Save state in slot {} is invalid or incompatible", slot),
+            }
+        }
+        Err(_) => eprintln!("No save state in slot {}", slot),
+    }
+}
+
 // ── ROM loader ─────────────────────────────────────────────────────────────────
 
 fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
@@ -214,10 +249,14 @@ struct VibeApp {
     time_debt_us: i64,
     sram_save_timer: u32, // frames since last SRAM save check
 
+    // Save state
+    save_slot: usize, // 1–9
+
     // UI state
     show_key_config: bool,
     show_about:      bool,
     show_fm_notice:  bool,
+    show_slot_hud:   u8,  // frames remaining to display the slot HUD
     binding:         Option<(usize, usize)>, // (player 0/1, action 0-6)
     window_title:    String,
 }
@@ -233,7 +272,9 @@ impl VibeApp {
             gilrs, pad: PadState::default(), key_config: KeyConfig::default(),
             mx: 0, my: 0, trigger_frames: 0,
             last_frame: Instant::now(), time_debt_us: 0, sram_save_timer: 0,
+            save_slot: 1,
             show_key_config: false, show_about: false, show_fm_notice: false,
+            show_slot_hud: 0,
             binding: None,
             window_title: "vibe-sms".to_string(),
         };
@@ -281,6 +322,41 @@ impl eframe::App for VibeApp {
                 if let Some((player, action)) = self.binding.take() {
                     if player == 0 { self.key_config.p1.set(action, key); }
                     else           { self.key_config.p2.set(action, key); }
+                }
+            }
+        }
+
+        // ── Save-state keyboard shortcuts ─────────────────────────────────────
+        // Only handle when not in the binding dialog
+        if self.binding.is_none() {
+            let (f5, f7, slot_key) = ctx.input(|i| {
+                let f5 = i.key_pressed(Key::F5);
+                let f7 = i.key_pressed(Key::F7);
+                let slot = [
+                    Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5,
+                    Key::Num6, Key::Num7, Key::Num8, Key::Num9,
+                ].iter().enumerate().find_map(|(idx, &k)| {
+                    if i.key_pressed(k) { Some(idx + 1) } else { None }
+                });
+                (f5, f7, slot)
+            });
+
+            if let Some(slot) = slot_key {
+                self.save_slot = slot;
+                self.show_slot_hud = 90; // show for 90 frames (~1.5s)
+            }
+            if f7 {
+                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+                    save_state_to_slot(e, p, self.save_slot);
+                    self.show_slot_hud = 90;
+                }
+            }
+            if f5 {
+                let slot = self.save_slot;
+                let rom_path = self.rom_path.clone();
+                if let (Some(ref mut e), Some(ref p)) = (&mut self.emu, &rom_path) {
+                    load_state_from_slot(e, p, slot);
+                    self.show_slot_hud = 90;
                 }
             }
         }
@@ -355,6 +431,39 @@ impl eframe::App for VibeApp {
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
+                });
+
+                // ── State ─────────────────────────────────────────────────────
+                ui.menu_button("State", |ui| {
+                    ui.add_enabled_ui(self.rom_path.is_some(), |ui| {
+                        ui.label(format!("Slot: {}", self.save_slot));
+                        ui.separator();
+                        for slot in 1..=9usize {
+                            let label = format!("Slot {} — Save  [{}+F7]", slot, slot);
+                            if ui.button(label).clicked() {
+                                ui.close();
+                                self.save_slot = slot;
+                                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+                                    save_state_to_slot(e, p, slot);
+                                }
+                            }
+                        }
+                        ui.separator();
+                        for slot in 1..=9usize {
+                            let label = format!("Slot {} — Load  [{}+F5]", slot, slot);
+                            if ui.button(label).clicked() {
+                                ui.close();
+                                self.save_slot = slot;
+                                let rom_path = self.rom_path.clone();
+                                if let (Some(ref mut e), Some(ref p)) = (&mut self.emu, &rom_path) {
+                                    load_state_from_slot(e, p, slot);
+                                }
+                            }
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("Press 1–9 to select slot").small().color(egui::Color32::GRAY));
+                        ui.label(egui::RichText::new("F7 = Save  ·  F5 = Load").small().color(egui::Color32::GRAY));
+                    });
                 });
 
                 // ── Configuration ─────────────────────────────────────────────
@@ -463,6 +572,28 @@ impl eframe::App for VibeApp {
                     tex.id(), render_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
+                );
+            }
+
+            // Slot HUD overlay
+            if self.show_slot_hud > 0 {
+                self.show_slot_hud -= 1;
+                let alpha = ((self.show_slot_hud as f32 / 90.0) * 220.0) as u8;
+                let hud = format!("Slot {}", self.save_slot);
+                let pos = egui::pos2(render_rect.min.x + 8.0, render_rect.min.y + 8.0);
+                ui.painter().text(
+                    pos + egui::vec2(1.0, 1.0),
+                    egui::Align2::LEFT_TOP,
+                    &hud,
+                    egui::FontId::proportional(20.0),
+                    egui::Color32::from_black_alpha(alpha),
+                );
+                ui.painter().text(
+                    pos,
+                    egui::Align2::LEFT_TOP,
+                    &hud,
+                    egui::FontId::proportional(20.0),
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 0, alpha),
                 );
             }
         });
