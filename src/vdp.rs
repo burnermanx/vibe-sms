@@ -257,11 +257,10 @@ impl Vdp {
         }
 
         let name_base    = (self.registers[2] as usize & 0x0F) << 10;
-        // Pattern table: bit 2 of R4 selects 0x0000 or 0x2000
+        // Pattern table: bit 2 of R4 selects base 0x0000 or 0x2000; bits 1:0 are mask bits (ignored here)
         let pattern_base = if (self.registers[4] & 0x04) != 0 { 0x2000usize } else { 0 };
-        // Color table: bit 7 of R3 selects 0x2000; otherwise R3<<6
-        let color_base   = if (self.registers[3] & 0x80) != 0 { 0x2000usize }
-                           else { (self.registers[3] as usize) << 6 };
+        // Color table: bit 7 of R3 selects base 0x0000 or 0x2000; bits 6:0 are mask bits (ignored here)
+        let color_base   = if (self.registers[3] & 0x80) != 0 { 0x2000usize } else { 0 };
 
         let row    = screen_y / 8;
         let tile_y = screen_y % 8;
@@ -322,7 +321,7 @@ impl Vdp {
 
     /// TMS9918A sprite renderer — shared by modes 0, 2, 3.
     ///
-    /// SAT format: 4 bytes per sprite [Y, X, Name, Attr], 32 sprites max, 4/line limit.
+    /// SAT: sequential 4 bytes per sprite [Y, X, Name, Attr].  32 sprites max, 4/line limit.
     /// Y is the row above the sprite top (actual_y = Y + 1).  Y = 0xD0 terminates list.
     /// Attr bit 7 = early clock (shift left 32 px); bits 3:0 = colour (0 = transparent).
     fn render_tms_sprites(&mut self, screen_y: usize) {
@@ -338,7 +337,8 @@ impl Vdp {
         let mut occupied = [false; 256];
 
         for i in 0..32usize {
-            let y_byte = self.vram[(sat_base + i * 4) & 0x3FFF];
+            let base = sat_base + i * 4;
+            let y_byte = self.vram[base & 0x3FFF];
             if y_byte == 0xD0 { break; }
 
             let actual_y = y_byte.wrapping_add(1) as usize;
@@ -351,7 +351,9 @@ impl Vdp {
                 // Sprite wraps past line 255
                 let overflow = actual_y + draw_size;
                 if overflow <= 256 { continue; }
-                256 - actual_y + screen_y
+                let d = 256 - actual_y + screen_y;
+                if d >= draw_size { continue; }
+                d
             };
 
             sprites_on_line += 1;
@@ -360,9 +362,9 @@ impl Vdp {
                 break;
             }
 
-            let x_byte    = self.vram[(sat_base + i * 4 + 1) & 0x3FFF];
-            let name      = self.vram[(sat_base + i * 4 + 2) & 0x3FFF] as usize;
-            let attr      = self.vram[(sat_base + i * 4 + 3) & 0x3FFF];
+            let x_byte = self.vram[(base + 1) & 0x3FFF];
+            let name   = self.vram[(base + 2) & 0x3FFF] as usize;
+            let attr   = self.vram[(base + 3) & 0x3FFF];
             let color_idx = (attr & 0x0F) as usize;
             if color_idx == 0 { continue; } // transparent
 
