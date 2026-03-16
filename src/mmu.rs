@@ -2,7 +2,8 @@ pub struct Mmu {
     pub ram: [u8; 8192], // 8KB Work RAM ($C000 - $DFFF)
     pub rom: Vec<u8>,    // O Cartucho de Jogo
     pub cart_ram: [u8; 16384], // Até 16KB de RAM no Cartucho
-    
+    pub sram_dirty: bool, // true quando cart_ram foi modificada desde o último save
+
     // Registradores do Sega Mapper
     pub ram_control: u8, // $FFFC
     pub rom_bank_0: usize,  // $FFFD (apenas a partir de $0400, $0000-$03FF é fixo)
@@ -21,10 +22,11 @@ impl Mmu {
             ram: [0; 8192],
             rom,
             cart_ram: [0; 16384],
+            sram_dirty: false,
             ram_control: 0,
             rom_bank_0: 0,
-            rom_bank_1: 1, 
-            rom_bank_2: 2, 
+            rom_bank_1: 1,
+            rom_bank_2: 2,
         }
     }
 
@@ -76,11 +78,13 @@ impl Mmu {
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
             0x8000..=0xBFFF => {
-                // Escrita na RAM do Cartucho (se habilitada)
-                if (self.ram_control & 0x08) != 0 {
+                // Escrita na RAM do Cartucho (se habilitada e sem write-protect)
+                // Bit 3 ($08): habilita cart RAM; Bit 0 ($01): write-protect (1 = protegido)
+                if (self.ram_control & 0x08) != 0 && (self.ram_control & 0x01) == 0 {
                     let ram_page = if (self.ram_control & 0x04) != 0 { 1 } else { 0 };
                     let offset = (ram_page * 0x2000) + (addr as usize - 0x8000);
                     self.cart_ram[offset] = value;
+                    self.sram_dirty = true;
                 }
             },
             0xC000..=0xDFFF => {
