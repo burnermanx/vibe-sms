@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Testes unitários + build release em cada plataforma ──────────────────────
+  test-and-build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # todas as plataformas rodam mesmo que uma falhe
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # eframe (glow/OpenGL), cpal (ALSA), rfd (GTK3), gilrs (udev)
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxkbcommon-dev libgl1-mesa-dev \
+            libgtk-3-dev \
+            libudev-dev \
+            pkg-config
+
+      - name: Cache Cargo registry + build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ci-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ci-${{ runner.os }}-${{ matrix.target }}-
+
+      # Testes rodam no perfil debug (mais rápido) — suficiente para unit tests
+      - name: cargo test
+        run: cargo test --target ${{ matrix.target }}
+
+      # Build release confirma que o perfil de produção compila sem erros
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+  # ── Job de agregação — único check a ser exigido na branch protection ─────────
+  #
+  # Configure em: Settings → Branches → Branch protection rules → main
+  #   ☑ Require status checks to pass before merging
+  #     Status check: "CI"
+  #
+  ci:
+    name: CI
+    if: always()
+    needs: [test-and-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All platform checks passed
+        run: |
+          result="${{ needs.test-and-build.result }}"
+          if [ "$result" != "success" ]; then
+            echo "CI falhou — resultado do job de plataformas: $result"
+            exit 1
+          fi
+          echo "Todos os checks de CI passaram."
