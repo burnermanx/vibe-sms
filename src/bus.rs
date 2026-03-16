@@ -11,7 +11,7 @@ pub struct Bus {
 impl Bus {
     pub fn new(rom: Vec<u8>, is_gg: bool, sample_rate: f32) -> Self {
         Self {
-            mmu: crate::mmu::Mmu::new(rom),
+            mmu: crate::mmu::Mmu::new(rom, is_gg),
             vdp: crate::vdp::Vdp::new(is_gg),
             joypad: crate::joypad::Joypad::new(is_gg),
             mixer: crate::audio::mixer::AudioMixer::new(is_gg, sample_rate),

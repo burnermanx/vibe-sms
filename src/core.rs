@@ -205,6 +205,34 @@ impl Emulator {
         bus.joypad.mouse_y = y;
     }
 
+    // ── EEPROM persistence ────────────────────────────────────────────────────
+
+    pub fn has_eeprom(&self) -> bool {
+        self.cpu.io.bus.borrow().mmu.eeprom.is_some()
+    }
+
+    pub fn is_eeprom_dirty(&self) -> bool {
+        self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.dirty).unwrap_or(false)
+    }
+
+    pub fn clear_eeprom_dirty(&self) {
+        if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
+            eeprom.dirty = false;
+        }
+    }
+
+    pub fn get_eeprom_data(&self) -> Option<Vec<u8>> {
+        self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.data.to_vec())
+    }
+
+    pub fn load_eeprom_data(&self, data: &[u8]) {
+        if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
+            let len = data.len().min(eeprom.data.len());
+            eeprom.data[..len].copy_from_slice(&data[..len]);
+            eeprom.dirty = false;
+        }
+    }
+
     // ── SRAM persistence ──────────────────────────────────────────────────────
 
     pub fn is_sram_dirty(&self) -> bool {
