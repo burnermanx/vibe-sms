@@ -7,7 +7,7 @@
 /// `SaveState::deserialize()`.  Both functions fail fast on any mismatch
 /// so a truncated or wrong-version file is simply ignored.
 const MAGIC: &[u8; 4] = b"VSMS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 // ── Sub-state structs ─────────────────────────────────────────────────────────
 

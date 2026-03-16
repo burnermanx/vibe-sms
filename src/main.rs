@@ -1,5 +1,6 @@
 mod audio;
 mod bus;
+pub mod platform;
 pub mod core;
 mod eeprom;
 pub mod frontend;

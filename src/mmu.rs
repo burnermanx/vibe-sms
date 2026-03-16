@@ -1,4 +1,5 @@
 use crate::eeprom::Eeprom93C46;
+use crate::platform::Platform;
 
 /// Jogos GG que usam EEPROM 93C46 em vez de SRAM (identificados por CRC32 do ROM).
 /// Fonte: Gearsystem game_db.h
@@ -29,25 +30,27 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 pub struct Mmu {
-    pub ram: [u8; 8192],       // 8KB Work RAM ($C000–$DFFF)
+    pub ram: [u8; 8192],       // 8KB Work RAM ($C000–$DFFF) — SG/SC only uses 1–2KB
     pub rom: Vec<u8>,          // O Cartucho de Jogo
-    pub cart_ram: [u8; 16384], // Até 16KB de RAM no Cartucho (SRAM)
-    pub sram_dirty: bool,      // true quando cart_ram foi modificada desde o último save
+    pub cart_ram: [u8; 16384], // Até 16KB de RAM no Cartucho (SRAM) — SMS/GG only
+    pub sram_dirty: bool,
 
     // EEPROM 93C46 (apenas para jogos GG que a utilizam)
     pub eeprom: Option<Eeprom93C46>,
 
-    // Registradores do Sega Mapper
+    // Registradores do Sega Mapper (SMS/GG only — unused for SG/SC)
     pub ram_control: u8,    // $FFFC
     pub rom_bank_0: usize,  // $FFFD
     pub rom_bank_1: usize,  // $FFFE
     pub rom_bank_2: usize,  // $FFFF
+
+    pub platform: Platform,
 }
 
 impl Mmu {
-    pub fn new(mut rom: Vec<u8>, is_gg: bool) -> Self {
-        // Detecta EEPROM antes de fazer padding (CRC32 do ROM original)
-        let eeprom = if is_gg {
+    pub fn new(mut rom: Vec<u8>, platform: Platform) -> Self {
+        // EEPROM detection: only for Game Gear
+        let eeprom = if platform.is_gg() {
             let rom_crc = crc32(&rom);
             if EEPROM_CRCS.contains(&rom_crc) {
                 println!("EEPROM 93C46 detectada (CRC32: {:#010X})", rom_crc);
@@ -59,8 +62,9 @@ impl Mmu {
             None
         };
 
-        // Garantir no mínimo 3 bancos (48KB) para evitar bounds check panic
-        if rom.len() < 0xC000 {
+        // SMS/GG: pad to minimum 3 banks (48KB) for mapper safety.
+        // SG/SC: no mapper — ROM accessed flat; no minimum padding needed.
+        if !platform.is_sg_family() && rom.len() < 0xC000 {
             rom.resize(0xC000, 0);
         }
 
@@ -74,10 +78,26 @@ impl Mmu {
             rom_bank_0: 0,
             rom_bank_1: 1,
             rom_bank_2: 2,
+            platform,
         }
     }
 
     pub fn read(&self, addr: u16) -> u8 {
+        // ── SG-1000 / SC-3000: flat ROM, mirrored RAM, no mapper ──────────────
+        if self.platform.is_sg_family() {
+            return match addr {
+                0x0000..=0xBFFF => {
+                    let off = addr as usize;
+                    if off < self.rom.len() { self.rom[off] } else { 0xFF }
+                }
+                0xC000..=0xFFFF => {
+                    let ram_size = if self.platform == Platform::Sc3000 { 2048 } else { 1024 };
+                    self.ram[(addr - 0xC000) as usize % ram_size]
+                }
+            };
+        }
+
+        // ── SMS / Game Gear: Sega mapper ──────────────────────────────────────
         match addr {
             0x0000..=0x03FF => {
                 // Primeiros 1KB são FIXOS no Banco 0
@@ -128,6 +148,17 @@ impl Mmu {
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
+        // ── SG-1000 / SC-3000: flat RAM, no mapper ────────────────────────────
+        if self.platform.is_sg_family() {
+            if addr >= 0xC000 {
+                let ram_size = if self.platform == Platform::Sc3000 { 2048 } else { 1024 };
+                self.ram[(addr - 0xC000) as usize % ram_size] = value;
+            }
+            // Writes to ROM area are silently ignored
+            return;
+        }
+
+        // ── SMS / Game Gear: Sega mapper ──────────────────────────────────────
         match addr {
             0x8000..=0xBFFF => {
                 // EEPROM 93C46 (acesso serial e direto)
@@ -197,7 +228,7 @@ mod tests {
         let mut rom = make_rom(4);
         // Marca o primeiro KB do banco 0 com valor especial
         for i in 0..0x400 { rom[i] = 0xAA; }
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         // Troca o banco 0 para o banco 2
         mmu.write(0xFFFD, 2);
         // O primeiro KB ($0000–$03FF) continua sendo do banco 0
@@ -210,7 +241,7 @@ mod tests {
     #[test]
     fn bank0_switching_affects_0400_to_3fff() {
         let rom = make_rom(4);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFD, 3); // banco 0 → banco 3
         // $0400 em diante deve retornar 3 (número do banco)
         assert_eq!(mmu.read(0x0400), 3);
@@ -220,7 +251,7 @@ mod tests {
     #[test]
     fn bank1_switching_affects_4000_to_7fff() {
         let rom = make_rom(4);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFE, 2); // banco 1 → banco 2
         assert_eq!(mmu.read(0x4000), 2);
         assert_eq!(mmu.read(0x7FFF), 2);
@@ -229,7 +260,7 @@ mod tests {
     #[test]
     fn bank2_switching_affects_8000_to_bfff() {
         let rom = make_rom(4);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFF, 3); // banco 2 → banco 3
         assert_eq!(mmu.read(0x8000), 3);
         assert_eq!(mmu.read(0xBFFF), 3);
@@ -239,7 +270,7 @@ mod tests {
     fn bank_wraps_modulo_num_banks() {
         // 4 bancos: banco 4 → wraps para banco 0
         let rom = make_rom(4);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFE, 4); // banco 1 = 4 mod 4 = 0
         assert_eq!(mmu.read(0x4000), 0);
         mmu.write(0xFFFE, 5); // 5 mod 4 = 1
@@ -251,7 +282,7 @@ mod tests {
     #[test]
     fn work_ram_read_write() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xC000, 0x42);
         assert_eq!(mmu.read(0xC000), 0x42);
         mmu.write(0xDFFF, 0x99);
@@ -261,7 +292,7 @@ mod tests {
     #[test]
     fn ram_mirror_e000_reads_from_c000() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xC000, 0x55);
         assert_eq!(mmu.read(0xE000), 0x55, "$E000 deve espelhar $C000");
     }
@@ -269,7 +300,7 @@ mod tests {
     #[test]
     fn ram_mirror_write_visible_at_c000() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xE010, 0x77);
         assert_eq!(mmu.read(0xC010), 0x77, "escrita em $E010 deve refletir em $C010");
     }
@@ -279,7 +310,7 @@ mod tests {
     #[test]
     fn cart_ram_disabled_by_default() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         // Por padrão rom_bank_2=2, então $8000 lê da ROM banco 2 (valor=2 em make_rom)
         let rom_value = mmu.read(0x8000);
         mmu.write(0x8000, 0xBB); // ram_control bit 3 = 0 → escrita ignorada
@@ -291,7 +322,7 @@ mod tests {
     #[test]
     fn cart_ram_enabled_by_bit3_of_ram_control() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFC, 0x08); // habilita cart RAM
         mmu.write(0x8000, 0xCC);
         assert_eq!(mmu.read(0x8000), 0xCC);
@@ -301,7 +332,7 @@ mod tests {
     #[test]
     fn cart_ram_write_protect_bit0() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         mmu.write(0xFFFC, 0x09); // habilita (bit3) + write-protect (bit0)
         mmu.write(0x8000, 0xDD);
         // Escrita deve ser bloqueada
@@ -312,7 +343,7 @@ mod tests {
     #[test]
     fn cart_ram_page_selection_bit2() {
         let rom = make_rom(3);
-        let mut mmu = Mmu::new(rom, false);
+        let mut mmu = Mmu::new(rom, Platform::MasterSystem);
         // Página 0 (bit2=0)
         mmu.write(0xFFFC, 0x08);
         mmu.write(0x8000, 0x11);
@@ -332,7 +363,7 @@ mod tests {
     #[test]
     fn rom_smaller_than_3_banks_is_padded() {
         let rom = vec![0xAA; 0x1000]; // 4KB — muito pequeno
-        let mmu = Mmu::new(rom, false);
+        let mmu = Mmu::new(rom, Platform::MasterSystem);
         assert!(mmu.rom.len() >= 0xC000, "ROM deve ser padded para pelo menos 48KB");
     }
 
@@ -356,7 +387,7 @@ mod tests {
     #[test]
     fn non_eeprom_rom_has_no_eeprom() {
         let rom = make_rom(3); // CRC aleatório → não está na lista
-        let mmu = Mmu::new(rom, true); // is_gg = true
+        let mmu = Mmu::new(rom, Platform::GameGear); // is_gg = true
         assert!(mmu.eeprom.is_none(), "ROM desconhecida não deve ativar EEPROM");
     }
 
@@ -364,7 +395,7 @@ mod tests {
     fn sms_rom_never_has_eeprom() {
         // Mesmo que o CRC bata por acaso, is_gg=false impede EEPROM
         let rom = make_rom(3);
-        let mmu = Mmu::new(rom, false);
+        let mmu = Mmu::new(rom, Platform::MasterSystem);
         assert!(mmu.eeprom.is_none());
     }
 }

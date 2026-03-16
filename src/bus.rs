@@ -1,21 +1,21 @@
+use crate::platform::Platform;
+
 pub struct Bus {
-    // Aqui vai a instância da Memory Management Unit (MMU)
-    // E conectar as portas de E/S (I/O) ao VDP e Joypad
-    pub mmu: crate::mmu::Mmu,
-    pub vdp: crate::vdp::Vdp,
+    pub mmu:    crate::mmu::Mmu,
+    pub vdp:    crate::vdp::Vdp,
     pub joypad: crate::joypad::Joypad,
-    pub mixer: crate::audio::mixer::AudioMixer,
-    pub is_gg: bool,
+    pub mixer:  crate::audio::mixer::AudioMixer,
+    pub platform: Platform,
 }
 
 impl Bus {
-    pub fn new(rom: Vec<u8>, is_gg: bool, sample_rate: f32) -> Self {
+    pub fn new(rom: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
         Self {
-            mmu: crate::mmu::Mmu::new(rom, is_gg),
-            vdp: crate::vdp::Vdp::new(is_gg),
-            joypad: crate::joypad::Joypad::new(is_gg),
-            mixer: crate::audio::mixer::AudioMixer::new(is_gg, sample_rate),
-            is_gg,
+            mmu:    crate::mmu::Mmu::new(rom, platform),
+            vdp:    crate::vdp::Vdp::new(platform),
+            joypad: crate::joypad::Joypad::new(platform.is_gg()),
+            mixer:  crate::audio::mixer::AudioMixer::new(platform.is_gg(), sample_rate),
+            platform,
         }
     }
 
@@ -48,7 +48,7 @@ impl Bus {
                 }
             },
             // Game Gear Start button and I/O ports
-            0x00 => if self.is_gg { self.joypad.read_port_00() } else { 0xFF },
+            0x00 => if self.platform.is_gg() { self.joypad.read_port_00() } else { 0xFF },
             // FM Audio Detection port ($F0 - $F2) — checked before the 0xC0-0xFF joypad mirror
             0xF0..=0xF2 => self.mixer.fm.read_data(port),
             // I/O ports: 0xC0-0xFF → Joypad (mirrored throughout this range)
@@ -78,7 +78,7 @@ impl Bus {
             },
             // Game Gear Stereo Panning (Port 0x06)
             0x06 => {
-                if self.is_gg {
+                if self.platform.is_gg() {
                     self.mixer.psg.write_stereo(value);
                 }
             },
@@ -103,14 +103,14 @@ impl Bus {
 
 pub struct System {
     pub bus: std::cell::RefCell<Bus>,
-    pub is_gg: bool,
+    pub platform: Platform,
 }
 
 impl System {
-    pub fn new(bus: Bus, is_gg: bool) -> Self {
+    pub fn new(bus: Bus, platform: Platform) -> Self {
         Self {
             bus: std::cell::RefCell::new(bus),
-            is_gg,
+            platform,
         }
     }
 }

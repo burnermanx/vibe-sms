@@ -1,4 +1,5 @@
 use crate::bus::{Bus, System};
+use crate::platform::Platform;
 use z80::Z80;
 
 pub struct Emulator {
@@ -7,23 +8,23 @@ pub struct Emulator {
     pub vcounter: u16,
     pub cycles_accumulator: i32,
     pub line_interrupt_counter: u8,
-    pub is_gg: bool,
+    pub platform: Platform,
 }
 
 impl Emulator {
-    pub fn new(rom_data: Vec<u8>, is_gg: bool, sample_rate: f32) -> Self {
-        let bus = Bus::new(rom_data, is_gg, sample_rate);
-        let system = System::new(bus, is_gg);
+    pub fn new(rom_data: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
+        let bus = Bus::new(rom_data, platform, sample_rate);
+        let system = System::new(bus, platform);
         let mut cpu = Z80::new(system);
         cpu.init();
-        
+
         Self {
             cpu,
             frame_cycles: 0,
             vcounter: 0,
             cycles_accumulator: 0,
             line_interrupt_counter: 0,
-            is_gg,
+            platform,
         }
     }
 
@@ -181,7 +182,7 @@ impl Emulator {
         // Detect rising edge of Start/Pause button
         // SMS: Pause button triggers NMI
         // Game Gear: Start button is read from I/O port 0x00, DOES NOT trigger NMI
-        let trigger_nmi = !self.is_gg && start && !bus.joypad.gg_start;
+        let trigger_nmi = !self.platform.is_gg() && start && !bus.joypad.gg_start;
         
         bus.joypad.gg_start = start;
         bus.joypad.p1_up = up;
