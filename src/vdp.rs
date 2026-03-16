@@ -57,6 +57,60 @@ impl Vdp {
         }
     }
 
+    // ── Save-state helpers ────────────────────────────────────────────────────
+
+    pub fn get_state(&self) -> crate::savestate::VdpState {
+        crate::savestate::VdpState {
+            vram:                self.vram,
+            cram:                self.cram,
+            registers:           self.registers,
+            control_word:        self.control_word,
+            first_byte_received: self.first_byte_received,
+            mode: match self.mode {
+                VdpMode::VramRead  => 0,
+                VdpMode::VramWrite => 1,
+                VdpMode::CramWrite => 2,
+            },
+            address_register:    self.address_register,
+            read_buffer:         self.read_buffer,
+            vblank_flag:         self.vblank_flag,
+            line_interrupt_flag: self.line_interrupt_flag,
+            sprite_collision:    self.sprite_collision,
+            sprite_overflow:     self.sprite_overflow,
+            v_counter:           self.v_counter,
+            h_counter:           self.h_counter,
+            h_latched:           self.h_latched,
+            latched_h_counter:   self.latched_h_counter,
+            latched_v_counter:   self.latched_v_counter,
+            cram_latch:          self.cram_latch,
+        }
+    }
+
+    pub fn load_state(&mut self, s: &crate::savestate::VdpState) {
+        self.vram                = s.vram;
+        self.cram                = s.cram;
+        self.registers           = s.registers;
+        self.control_word        = s.control_word;
+        self.first_byte_received = s.first_byte_received;
+        self.mode = match s.mode {
+            1 => VdpMode::VramWrite,
+            2 => VdpMode::CramWrite,
+            _ => VdpMode::VramRead,
+        };
+        self.address_register    = s.address_register;
+        self.read_buffer         = s.read_buffer;
+        self.vblank_flag         = s.vblank_flag;
+        self.line_interrupt_flag = s.line_interrupt_flag;
+        self.sprite_collision    = s.sprite_collision;
+        self.sprite_overflow     = s.sprite_overflow;
+        self.v_counter           = s.v_counter;
+        self.h_counter           = s.h_counter;
+        self.h_latched           = s.h_latched;
+        self.latched_h_counter   = s.latched_h_counter;
+        self.latched_v_counter   = s.latched_v_counter;
+        self.cram_latch          = s.cram_latch;
+    }
+
     pub fn latch_h_v_counters(&mut self) {
         // The real hardware always updates the latch when TH drops!
         self.latched_h_counter = self.h_counter;

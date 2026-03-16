@@ -205,6 +205,84 @@ impl Emulator {
         bus.joypad.mouse_y = y;
     }
 
+    // ── Save state ────────────────────────────────────────────────────────────
+
+    pub fn save_state(&self) -> crate::savestate::SaveState {
+        use crate::savestate::*;
+        let bus = self.cpu.io.bus.borrow();
+
+        let cpu = CpuState {
+            af: self.cpu.get_af(), bc: self.cpu.get_bc(),
+            de: self.cpu.get_de(), hl: self.cpu.get_hl(),
+            af_alt: self.cpu.get_af_alt(), bc_alt: self.cpu.get_bc_alt(),
+            de_alt: self.cpu.get_de_alt(), hl_alt: self.cpu.get_hl_alt(),
+            pc: self.cpu.pc, sp: self.cpu.sp,
+            ix: self.cpu.ix, iy: self.cpu.iy, mem_ptr: self.cpu.mem_ptr,
+            i: self.cpu.i, r: self.cpu.r,
+            iff1: self.cpu.iff1, iff2: self.cpu.iff2, halted: self.cpu.halted,
+            interrupt_mode: self.cpu.interrupt_mode, iff_delay: self.cpu.iff_delay,
+            irq_pending: self.cpu.irq_pending, nmi_pending: self.cpu.nmi_pending,
+            irq_data: self.cpu.irq_data,
+        };
+
+        let mmu = MmuState {
+            ram:        bus.mmu.ram,
+            cart_ram:   bus.mmu.cart_ram,
+            ram_control: bus.mmu.ram_control,
+            rom_bank_0: bus.mmu.rom_bank_0,
+            rom_bank_1: bus.mmu.rom_bank_1,
+            rom_bank_2: bus.mmu.rom_bank_2,
+        };
+
+        let vdp = bus.vdp.get_state();
+        let psg = bus.mixer.psg.get_state();
+
+        let timing = EmuTimingState {
+            vcounter: self.vcounter,
+            cycles_accumulator: self.cycles_accumulator,
+            line_interrupt_counter: self.line_interrupt_counter,
+            frame_cycles: self.frame_cycles,
+        };
+
+        SaveState { cpu, mmu, vdp, psg, timing }
+    }
+
+    pub fn load_state(&mut self, state: crate::savestate::SaveState) {
+        // CPU
+        let c = &state.cpu;
+        self.cpu.set_af(c.af); self.cpu.set_bc(c.bc);
+        self.cpu.set_de(c.de); self.cpu.set_hl(c.hl);
+        self.cpu.set_af_alt(c.af_alt); self.cpu.set_bc_alt(c.bc_alt);
+        self.cpu.set_de_alt(c.de_alt); self.cpu.set_hl_alt(c.hl_alt);
+        self.cpu.pc = c.pc; self.cpu.sp = c.sp;
+        self.cpu.ix = c.ix; self.cpu.iy = c.iy; self.cpu.mem_ptr = c.mem_ptr;
+        self.cpu.i = c.i; self.cpu.r = c.r;
+        self.cpu.iff1 = c.iff1; self.cpu.iff2 = c.iff2; self.cpu.halted = c.halted;
+        self.cpu.interrupt_mode = c.interrupt_mode; self.cpu.iff_delay = c.iff_delay;
+        self.cpu.irq_pending = c.irq_pending; self.cpu.nmi_pending = c.nmi_pending;
+        self.cpu.irq_data = c.irq_data;
+
+        // Bus
+        let mut bus = self.cpu.io.bus.borrow_mut();
+        let m = &state.mmu;
+        bus.mmu.ram        = m.ram;
+        bus.mmu.cart_ram   = m.cart_ram;
+        bus.mmu.ram_control = m.ram_control;
+        bus.mmu.rom_bank_0 = m.rom_bank_0;
+        bus.mmu.rom_bank_1 = m.rom_bank_1;
+        bus.mmu.rom_bank_2 = m.rom_bank_2;
+
+        bus.vdp.load_state(&state.vdp);
+        bus.mixer.psg.load_state(&state.psg);
+
+        // Timing
+        let t = &state.timing;
+        self.vcounter              = t.vcounter;
+        self.cycles_accumulator    = t.cycles_accumulator;
+        self.line_interrupt_counter = t.line_interrupt_counter;
+        self.frame_cycles          = t.frame_cycles;
+    }
+
     // ── EEPROM persistence ────────────────────────────────────────────────────
 
     pub fn has_eeprom(&self) -> bool {

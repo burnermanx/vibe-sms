@@ -4290,8 +4290,6 @@ dependencies = [
 [[package]]
 name = "z80"
 version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b0da1e980dcad2d81fc5d2a6384fc67997ecfa4a2263772e5ccc9a2faedc043"
 
 [[package]]
 name = "zbus"

@@ -3,6 +3,9 @@ name = "vibe-sms"
 version = "0.1.0"
 edition = "2021"
 
+[patch.crates-io]
+z80 = { path = "vendor/z80" }
+
 [dependencies]
 # Core
 z80 = "1.0.2"

@@ -3,6 +3,7 @@ mod bus;
 pub mod core;
 mod eeprom;
 pub mod frontend;
+mod savestate;
 mod joypad;
 mod mmu;
 mod vdp;
