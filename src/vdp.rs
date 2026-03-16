@@ -78,8 +78,6 @@ impl Vdp {
         }
     }
 
-    // ── Save-state helpers ────────────────────────────────────────────────────
-
     pub fn get_state(&self) -> crate::savestate::VdpState {
         crate::savestate::VdpState {
             vram:                self.vram,
@@ -160,8 +158,6 @@ impl Vdp {
             0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
         }
     }
-
-    // ── TMS9918A rendering (SG-1000 / SC-3000) ───────────────────────────────
 
     /// Determine TMS9918A rendering mode from register bits M1, M2, M3, M4.
     fn tms_mode(&self) -> u8 {
@@ -425,7 +421,6 @@ impl Vdp {
             return;
         }
 
-        // ── SMS / Game Gear — Mode 4 ──────────────────────────────────────────
         let display_enabled = (self.registers[1] & 0x40) != 0;
         let backdrop_color = self.get_color(16 + (self.registers[7] & 0x0F) as usize);
 

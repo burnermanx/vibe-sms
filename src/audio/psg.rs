@@ -1,4 +1,4 @@
-const MAX_VOLUME: f32 = 0.25; // Adjusted mix volume to compete with FM chip
+const MAX_VOLUME: f32 = 0.25; // Per-channel headroom: 4 channels × 0.25 = 1.0 max
 
 const PSG_VOLUME_TABLE: [f32; 16] = [
     1.000000, 0.794328, 0.630957, 0.501187,
@@ -66,8 +66,6 @@ impl Psg {
             sample_rate,
         }
     }
-
-    // ── Save-state helpers ────────────────────────────────────────────────────
 
     pub fn get_state(&self) -> crate::savestate::PsgState {
         crate::savestate::PsgState {
@@ -234,13 +232,9 @@ impl Psg {
     }
 }
 
-// ── Testes ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Protocolo latch/data ──────────────────────────────────────────────────
 
     #[test]
     fn latch_byte_selects_tone0_low_nibble() {

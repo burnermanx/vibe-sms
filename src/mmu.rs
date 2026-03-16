@@ -83,7 +83,7 @@ impl Mmu {
     }
 
     pub fn read(&self, addr: u16) -> u8 {
-        // ── SG-1000 / SC-3000: flat ROM, mirrored RAM, no mapper ──────────────
+        // SG-1000/SC-3000: flat ROM
         if self.platform.is_sg_family() {
             return match addr {
                 0x0000..=0xBFFF => {
@@ -97,7 +97,7 @@ impl Mmu {
             };
         }
 
-        // ── SMS / Game Gear: Sega mapper ──────────────────────────────────────
+        // SMS/GG: Sega mapper
         match addr {
             0x0000..=0x03FF => {
                 // Primeiros 1KB são FIXOS no Banco 0
@@ -148,7 +148,7 @@ impl Mmu {
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
-        // ── SG-1000 / SC-3000: flat RAM, no mapper ────────────────────────────
+        // SG-1000/SC-3000: flat RAM
         if self.platform.is_sg_family() {
             if addr >= 0xC000 {
                 let ram_size = if self.platform == Platform::Sc3000 { 2048 } else { 1024 };
@@ -158,7 +158,7 @@ impl Mmu {
             return;
         }
 
-        // ── SMS / Game Gear: Sega mapper ──────────────────────────────────────
+        // SMS/GG: Sega mapper
         match addr {
             0x8000..=0xBFFF => {
                 // EEPROM 93C46 (acesso serial e direto)
@@ -203,8 +203,6 @@ impl Mmu {
     }
 }
 
-// ── Testes ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,7 +219,7 @@ mod tests {
         rom
     }
 
-    // ── Banco fixo ($0000–$03FF) ──────────────────────────────────────────────
+    // Fixed bank ($0000–$03FF)
 
     #[test]
     fn first_1kb_is_always_bank0() {
@@ -236,7 +234,7 @@ mod tests {
         assert_eq!(mmu.read(0x03FF), 0xAA);
     }
 
-    // ── Bank switching ($FFFD / $FFFE / $FFFF) ────────────────────────────────
+    // Bank switching
 
     #[test]
     fn bank0_switching_affects_0400_to_3fff() {
@@ -277,7 +275,7 @@ mod tests {
         assert_eq!(mmu.read(0x4000), 1);
     }
 
-    // ── Work RAM e espelhamento ────────────────────────────────────────────────
+    // Work RAM mirroring
 
     #[test]
     fn work_ram_read_write() {
@@ -305,7 +303,7 @@ mod tests {
         assert_eq!(mmu.read(0xC010), 0x77, "escrita em $E010 deve refletir em $C010");
     }
 
-    // ── SRAM do Cartucho ──────────────────────────────────────────────────────
+    // Cart RAM
 
     #[test]
     fn cart_ram_disabled_by_default() {
@@ -358,7 +356,7 @@ mod tests {
         assert_eq!(mmu.read(0x8000), 0x22);
     }
 
-    // ── ROM padding ───────────────────────────────────────────────────────────
+    // ROM padding
 
     #[test]
     fn rom_smaller_than_3_banks_is_padded() {
@@ -367,7 +365,7 @@ mod tests {
         assert!(mmu.rom.len() >= 0xC000, "ROM deve ser padded para pelo menos 48KB");
     }
 
-    // ── CRC32 ─────────────────────────────────────────────────────────────────
+    // CRC32
 
     #[test]
     fn crc32_known_vector() {
@@ -382,7 +380,7 @@ mod tests {
         assert_eq!(crc32(&[]), 0x00000000);
     }
 
-    // ── Detecção de EEPROM ────────────────────────────────────────────────────
+    // EEPROM detection
 
     #[test]
     fn non_eeprom_rom_has_no_eeprom() {
