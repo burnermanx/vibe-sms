@@ -139,7 +139,7 @@ impl AppMenu {
 
     #[cfg(not(target_os = "linux"))]
     fn do_attach(window: &winit::window::Window) {
-        use raw_window_handle::HasWindowHandle;
+        use winit::raw_window_handle::HasWindowHandle;
         NATIVE_MENU.with(|cell| {
             if let Some(ref menu) = *cell.borrow() {
                 #[cfg(target_os = "macos")]
@@ -147,7 +147,7 @@ impl AppMenu {
 
                 #[cfg(target_os = "windows")]
                 {
-                    use raw_window_handle::RawWindowHandle;
+                    use winit::raw_window_handle::RawWindowHandle;
                     if let Ok(handle) = window.window_handle() {
                         if let RawWindowHandle::Win32(h) = handle.as_raw() {
                             unsafe { menu.init_for_hwnd(h.hwnd.get() as _).unwrap(); }
