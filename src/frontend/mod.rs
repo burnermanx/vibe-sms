@@ -436,33 +436,34 @@ impl eframe::App for VibeApp {
                 // ── State ─────────────────────────────────────────────────────
                 ui.menu_button("State", |ui| {
                     ui.add_enabled_ui(self.rom_path.is_some(), |ui| {
-                        ui.label(format!("Slot: {}", self.save_slot));
-                        ui.separator();
-                        for slot in 1..=9usize {
-                            let label = format!("Slot {} — Save  [{}+F7]", slot, slot);
-                            if ui.button(label).clicked() {
-                                ui.close();
-                                self.save_slot = slot;
-                                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                                    save_state_to_slot(e, p, slot);
-                                }
+                        if ui.button("Save State  [F7]").clicked() {
+                            ui.close();
+                            if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+                                save_state_to_slot(e, p, self.save_slot);
+                                self.show_slot_hud = 90;
+                            }
+                        }
+                        if ui.button("Load State  [F5]").clicked() {
+                            ui.close();
+                            let slot = self.save_slot;
+                            let rom_path = self.rom_path.clone();
+                            if let (Some(ref mut e), Some(ref p)) = (&mut self.emu, &rom_path) {
+                                load_state_from_slot(e, p, slot);
+                                self.show_slot_hud = 90;
                             }
                         }
                         ui.separator();
-                        for slot in 1..=9usize {
-                            let label = format!("Slot {} — Load  [{}+F5]", slot, slot);
-                            if ui.button(label).clicked() {
-                                ui.close();
-                                self.save_slot = slot;
-                                let rom_path = self.rom_path.clone();
-                                if let (Some(ref mut e), Some(ref p)) = (&mut self.emu, &rom_path) {
-                                    load_state_from_slot(e, p, slot);
+                        ui.menu_button(format!("Slot  [{}]", self.save_slot), |ui| {
+                            for slot in 1..=9usize {
+                                let selected = slot == self.save_slot;
+                                let label = format!("{} Slot {}", if selected { "✓" } else { "  " }, slot);
+                                if ui.button(label).clicked() {
+                                    ui.close();
+                                    self.save_slot = slot;
+                                    self.show_slot_hud = 90;
                                 }
                             }
-                        }
-                        ui.separator();
-                        ui.label(egui::RichText::new("Press 1–9 to select slot").small().color(egui::Color32::GRAY));
-                        ui.label(egui::RichText::new("F7 = Save  ·  F5 = Load").small().color(egui::Color32::GRAY));
+                        });
                     });
                 });
 
