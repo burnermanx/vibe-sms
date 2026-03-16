@@ -138,17 +138,13 @@ impl Eeprom93C46 {
                 }
             }
             State::Reading => {
-                // Atualiza DO antes de decrementar (o bit atual já foi lido pelo game)
                 if self.position > 0 {
+                    // Calcula o bit ANTES de decrementar: position=16 → bit15 (MSB), ..., position=1 → bit0
+                    self.out_bit = (self.out_reg >> (self.position - 1)) & 1 != 0;
                     self.position -= 1;
-                    self.out_bit = if self.position > 0 {
-                        (self.out_reg >> (self.position - 1)) & 1 != 0
-                    } else {
-                        true // DO=1 após último bit
-                    };
-                }
-                if self.position == 0 {
-                    self.state = State::Start;
+                    if self.position == 0 {
+                        self.state = State::Start;
+                    }
                 }
             }
             State::Writing => {
@@ -253,5 +249,259 @@ impl Eeprom93C46 {
         let bytes = word.to_le_bytes();
         self.data[base]     = bytes[0];
         self.data[base + 1] = bytes[1];
+    }
+}
+
+// ── Testes ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers do protocolo Microwire ────────────────────────────────────────
+
+    /// Ativa CS (começa transação).
+    fn begin_tx(e: &mut Eeprom93C46) {
+        e.write_control(0x04); // CS=1, CLK=0, DI=0
+    }
+
+    /// Desativa CS (encerra transação e reseta a máquina de estados).
+    fn end_tx(e: &mut Eeprom93C46) {
+        e.write_control(0x00); // CS=0 → borda descendente → reset
+    }
+
+    /// Envia um bit (DI=di) via borda de subida do CLK. Retorna DO após a borda.
+    fn clock_bit(e: &mut Eeprom93C46, di: bool) -> bool {
+        let d = if di { 1u8 } else { 0u8 };
+        e.write_control(0x04 | d);        // CS=1, CLK=0
+        e.write_control(0x04 | 0x02 | d); // CS=1, CLK=1 → borda de subida
+        (e.read_control() & 0x08) != 0    // retorna DO (bit 3)
+    }
+
+    /// Envia start bit (1) + 8 bits de comando (opcode MSB primeiro).
+    /// cmd = (opcode << 6) | addr, enviado do bit 7 ao bit 0.
+    fn send_cmd(e: &mut Eeprom93C46, opcode: u8, addr: u8) {
+        clock_bit(e, true); // start bit sempre 1
+        let cmd = (opcode << 6) | (addr & 0x3F);
+        for i in (0..8).rev() {
+            clock_bit(e, (cmd >> i) & 1 != 0);
+        }
+    }
+
+    /// Transação completa: EWEN (habilita escrita).
+    fn ewen(e: &mut Eeprom93C46) {
+        begin_tx(e);
+        send_cmd(e, 0b00, 0b11_0000); // op=00, addr bits 5-4=11 → EWEN
+        end_tx(e);
+    }
+
+    /// Transação completa: EWDS (desabilita escrita).
+    fn ewds(e: &mut Eeprom93C46) {
+        begin_tx(e);
+        send_cmd(e, 0b00, 0b00_0000); // op=00, addr bits 5-4=00 → EWDS
+        end_tx(e);
+    }
+
+    /// Transação completa: WRITE — escreve word em addr.
+    fn write_word_cmd(e: &mut Eeprom93C46, addr: u8, data: u16) {
+        begin_tx(e);
+        send_cmd(e, 0b01, addr);
+        for i in (0..16).rev() {
+            clock_bit(e, (data >> i) & 1 != 0);
+        }
+        end_tx(e);
+    }
+
+    /// Transação completa: READ — lê e retorna a word em addr (16 bits MSB-first).
+    fn read_word_cmd(e: &mut Eeprom93C46, addr: u8) -> u16 {
+        begin_tx(e);
+        send_cmd(e, 0b10, addr);
+        // Primeiro bit disponível em DO antes do clock é o dummy (0); ignoramos.
+        // 16 clocks → 16 bits de dados, MSB primeiro.
+        let mut word = 0u16;
+        for _ in 0..16 {
+            let bit = clock_bit(e, false);
+            word = (word << 1) | (bit as u16);
+        }
+        end_tx(e);
+        word
+    }
+
+    // ── Testes ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn initial_data_is_erased() {
+        let e = Eeprom93C46::new();
+        assert_eq!(e.data, [0xFF; 128], "EEPROM nova deve estar apagada (0xFF)");
+        assert!(!e.dirty);
+    }
+
+    #[test]
+    fn write_without_ewen_is_ignored() {
+        let mut e = Eeprom93C46::new();
+        write_word_cmd(&mut e, 0, 0x1234);
+        assert_eq!(e.direct_read(0), 0xFF, "write sem EWEN não deve alterar dados");
+        assert_eq!(e.direct_read(1), 0xFF);
+        assert!(!e.dirty);
+    }
+
+    #[test]
+    fn ewen_enables_write() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 5, 0xABCD);
+        assert!(e.dirty);
+        // Verifica via acesso direto (LE: low byte em [10], high byte em [11])
+        assert_eq!(e.direct_read(10), 0xCD);
+        assert_eq!(e.direct_read(11), 0xAB);
+    }
+
+    #[test]
+    fn read_returns_written_word() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 5, 0xABCD);
+        assert_eq!(read_word_cmd(&mut e, 5), 0xABCD);
+    }
+
+    #[test]
+    fn read_msb_first() {
+        // Verifica que o protocolo serial envia os bits do MSB para o LSB
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 0, 0x8001); // bit15=1, bit0=1, demais=0
+        assert_eq!(read_word_cmd(&mut e, 0), 0x8001);
+    }
+
+    #[test]
+    fn ewds_prevents_write_after_ewen() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        ewds(&mut e);
+        write_word_cmd(&mut e, 3, 0x5678);
+        assert_eq!(read_word_cmd(&mut e, 3), 0xFFFF, "EWDS deve bloquear escrita");
+    }
+
+    #[test]
+    fn erase_word_sets_0xffff() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 0, 0x1234);
+        begin_tx(&mut e);
+        send_cmd(&mut e, 0b11, 0); // ERASE addr=0
+        end_tx(&mut e);
+        assert_eq!(read_word_cmd(&mut e, 0), 0xFFFF);
+    }
+
+    #[test]
+    fn erase_without_ewen_is_ignored() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 0, 0x1234);
+        ewds(&mut e);
+        begin_tx(&mut e);
+        send_cmd(&mut e, 0b11, 0); // ERASE sem write_enabled
+        end_tx(&mut e);
+        assert_eq!(read_word_cmd(&mut e, 0), 0x1234, "ERASE sem EWEN não deve apagar");
+    }
+
+    #[test]
+    fn eral_erases_all_words() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 0,  0x1111);
+        write_word_cmd(&mut e, 10, 0x2222);
+        write_word_cmd(&mut e, 63, 0x3333);
+        begin_tx(&mut e);
+        send_cmd(&mut e, 0b00, 0b10_0000); // ERAL
+        end_tx(&mut e);
+        for addr in 0..64u8 {
+            assert_eq!(read_word_cmd(&mut e, addr), 0xFFFF, "ERAL deve apagar addr {}", addr);
+        }
+    }
+
+    #[test]
+    fn wral_writes_all_words() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        begin_tx(&mut e);
+        send_cmd(&mut e, 0b00, 0b01_0000); // WRAL
+        for i in (0..16).rev() {
+            clock_bit(&mut e, (0xBEEFu16 >> i) & 1 != 0);
+        }
+        end_tx(&mut e);
+        for addr in 0..64u8 {
+            assert_eq!(read_word_cmd(&mut e, addr), 0xBEEF, "WRAL deve preencher addr {}", addr);
+        }
+    }
+
+    #[test]
+    fn wral_without_ewen_is_ignored() {
+        let mut e = Eeprom93C46::new();
+        begin_tx(&mut e);
+        send_cmd(&mut e, 0b00, 0b01_0000); // WRAL sem EWEN
+        for i in (0..16).rev() {
+            clock_bit(&mut e, (0xBEEFu16 >> i) & 1 != 0);
+        }
+        end_tx(&mut e);
+        assert_eq!(read_word_cmd(&mut e, 0), 0xFFFF);
+    }
+
+    #[test]
+    fn cs_falling_edge_resets_mid_command() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        // Começa um WRITE mas abandona no meio
+        begin_tx(&mut e);
+        clock_bit(&mut e, true);  // start bit
+        clock_bit(&mut e, false); // 1º bit do opcode
+        end_tx(&mut e); // CS cai → reset
+        // Transação completa após o reset deve funcionar normalmente
+        write_word_cmd(&mut e, 7, 0xDEAD);
+        assert_eq!(read_word_cmd(&mut e, 7), 0xDEAD);
+    }
+
+    #[test]
+    fn direct_read_write() {
+        let mut e = Eeprom93C46::new();
+        e.direct_write(0, 0x42);
+        e.direct_write(1, 0x13);
+        assert_eq!(e.direct_read(0), 0x42);
+        assert_eq!(e.direct_read(1), 0x13);
+        assert!(e.dirty);
+    }
+
+    #[test]
+    fn direct_and_serial_access_share_storage() {
+        // word 2 está nos bytes [4] (low) e [5] (high) em LE
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 2, 0x1234);
+        assert_eq!(e.direct_read(4), 0x34, "low byte de word[2]");
+        assert_eq!(e.direct_read(5), 0x12, "high byte de word[2]");
+    }
+
+    #[test]
+    fn write_all_64_words_and_read_back() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        for addr in 0..64u8 {
+            let val = 0x0100u16 * addr as u16 + addr as u16;
+            write_word_cmd(&mut e, addr, val);
+        }
+        for addr in 0..64u8 {
+            let expected = 0x0100u16 * addr as u16 + addr as u16;
+            assert_eq!(read_word_cmd(&mut e, addr), expected, "addr {}", addr);
+        }
+    }
+
+    #[test]
+    fn dirty_cleared_externally() {
+        let mut e = Eeprom93C46::new();
+        ewen(&mut e);
+        write_word_cmd(&mut e, 0, 0x1111);
+        assert!(e.dirty);
+        e.dirty = false;
+        assert!(!e.dirty);
     }
 }
