@@ -226,7 +226,8 @@ impl Vdp {
 
         let name_base    = (self.registers[2] as usize & 0x0F) << 10;
         let pattern_base = (self.registers[4] as usize & 0x07) << 11;
-        let fg = TMS_PALETTE[(self.registers[7] >> 4) as usize];
+        let fg_idx = (self.registers[7] >> 4) as usize;
+        let fg = if fg_idx == 0 { backdrop } else { TMS_PALETTE[fg_idx] };
 
         let row    = screen_y / 8;
         let tile_y = screen_y % 8;
@@ -298,13 +299,13 @@ impl Vdp {
         let name_base    = (self.registers[2] as usize & 0x0F) << 10;
         let pattern_base = (self.registers[4] as usize & 0x07) << 11;
 
-        let row        = screen_y / 8;
-        let tile_y     = screen_y % 8;
-        let color_line = tile_y / 4; // 0 = top half, 1 = bottom half
+        let row     = screen_y / 8;
+        // vrEmuTms9918 formula: pattRow = ((y/4)&1) + (tileY&3)*2
+        let patt_row = ((screen_y / 4) & 1) + (row & 3) * 2;
 
         for col in 0..32usize {
             let tile_index   = self.vram[(name_base + row * 32 + col) & 0x3FFF] as usize;
-            let pattern_byte = self.vram[(pattern_base + tile_index * 8 + color_line * 4) & 0x3FFF];
+            let pattern_byte = self.vram[(pattern_base + tile_index * 8 + patt_row) & 0x3FFF];
 
             let left_idx  = (pattern_byte >> 4) as usize;
             let right_idx = (pattern_byte & 0x0F) as usize;
@@ -375,12 +376,15 @@ impl Vdp {
             // Row within the pattern (undo magnification)
             let pat_row = if magnified { y_in_sprite / 2 } else { y_in_sprite };
 
-            // For 16×16: four 8×8 quadrant tiles — N, N+1, N+2, N+3 (name & 0xFC aligned)
+            // For 16×16 sprites the four 8×8 tiles are laid out in VRAM as:
+            //   N+0: left column rows 0-7   N+1: left column rows 8-15
+            //   N+2: right column rows 0-7  N+3: right column rows 8-15
             let tile_cols = if is_16x16 { 2usize } else { 1 };
 
             for tc in 0..tile_cols {
                 let tile_index = if is_16x16 {
-                    (name & 0xFC) + tc + if pat_row >= 8 { 2 } else { 0 }
+                    // tc*2 selects left(0) or right(2); +1 if in the bottom half
+                    (name & 0xFC) + tc * 2 + if pat_row >= 8 { 1 } else { 0 }
                 } else {
                     name
                 };
