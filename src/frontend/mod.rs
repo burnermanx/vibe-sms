@@ -6,6 +6,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use gilrs::{Gilrs, Button, Event as GilrsEvent};
 use crate::core::Emulator;
+use crate::platform::Platform;
 
 const SMS_W: usize = 256;
 const SMS_H: usize = 192;
@@ -145,15 +146,24 @@ fn load_state_from_slot(emu: &mut crate::core::Emulator, rom_path: &PathBuf, slo
 fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
     match std::fs::read(path) {
         Ok(data) => {
-            let is_gg = path.extension()
+            let platform = match path.extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("gg"))
-                .unwrap_or(false);
-            let emu = Emulator::new(data, is_gg, sample_rate);
-            emu.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = !is_gg && fm_disabled;
+                .map(|e| e.to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("gg")  => Platform::GameGear,
+                Some("sg")  => Platform::Sg1000,
+                Some("sc")  => Platform::Sc3000,
+                _           => Platform::MasterSystem,
+            };
+            let emu = Emulator::new(data, platform, sample_rate);
+            // FM audio: only available on Master System
+            emu.cpu.io.bus.borrow_mut().mixer.fm.user_disabled =
+                platform != Platform::MasterSystem || fm_disabled;
             load_sram_into(&emu, path);
             load_eeprom_into(&emu, path);
-            println!("Loaded ROM: {} (GG: {})", path.file_stem().and_then(|n| n.to_str()).unwrap_or("?"), is_gg);
+            println!("Loaded ROM: {} ({:?})",
+                path.file_stem().and_then(|n| n.to_str()).unwrap_or("?"), platform);
             Some(emu)
         }
         Err(e) => { eprintln!("Failed to load ROM: {e}"); None }
@@ -362,7 +372,8 @@ impl eframe::App for VibeApp {
         }
 
         // ── Read keyboard + mouse state ───────────────────────────────────────
-        let is_gg = self.emu.as_ref().map(|e| e.is_gg).unwrap_or(false);
+        let is_gg = self.emu.as_ref().map(|e| e.platform.is_gg()).unwrap_or(false);
+        let is_sg = self.emu.as_ref().map(|e| e.platform.is_sg_family()).unwrap_or(false);
         let (ku, kd, kl, kr, kb1, kb2, kstart, mouse_down) = ctx.input(|i| {
             let kc = &self.key_config; let p = &self.pad;
             (
@@ -386,7 +397,7 @@ impl eframe::App for VibeApp {
                     if ui.button("Open ROM…").clicked() {
                         ui.close();
                         let path = rfd::FileDialog::new()
-                            .add_filter("Sega 8-bit ROMs", &["sms", "sg", "gg", "SMS", "SG", "GG"])
+                            .add_filter("Sega 8-bit ROMs", &["sms", "sg", "sc", "gg", "SMS", "SG", "SC", "GG"])
                             .pick_file();
                         if let Some(p) = path {
                             // Save current SRAM/EEPROM before replacing the emulator
@@ -475,12 +486,12 @@ impl eframe::App for VibeApp {
                     }
                     ui.separator();
                     let mut fm_on = !self.fm_disabled;
-                    let fm_changed = ui.add_enabled(!is_gg, egui::Checkbox::new(&mut fm_on, "FM Sound")).changed();
+                    let fm_changed = ui.add_enabled(!is_gg && !is_sg, egui::Checkbox::new(&mut fm_on, "FM Sound")).changed();
                     if fm_changed {
                         self.fm_disabled = !fm_on;
                         self.show_fm_notice = true;
                     }
-                    if is_gg {
+                    if is_gg || is_sg {
                         ui.label(egui::RichText::new("(SMS only)").small().color(egui::Color32::GRAY));
                     }
                 });
@@ -521,7 +532,7 @@ impl eframe::App for VibeApp {
                 if self.trigger_frames > 0 { self.trigger_frames -= 1; }
 
                 if let Some(ref mut e) = self.emu {
-                    e.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = self.fm_disabled;
+                    e.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = is_sg || is_gg || self.fm_disabled;
                     e.set_input(ku, kd, kl, kr, kb1 || trigger_active, kb2, kstart);
                     e.set_lightgun(trigger_active, self.mx.min(255), self.my.min(191));
 

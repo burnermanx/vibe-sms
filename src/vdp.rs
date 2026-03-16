@@ -1,3 +1,5 @@
+use crate::platform::Platform;
+
 #[derive(PartialEq)]
 enum VdpMode {
     VramRead,
@@ -5,19 +7,38 @@ enum VdpMode {
     CramWrite,
 }
 
+/// Fixed 16-colour hardware palette of the TMS9918A.
+/// Indexed by colour code 0–15. Colour 0 is "Transparent" (rendered as backdrop).
+const TMS_PALETTE: [u32; 16] = [
+    0xFF000000, // 0  Transparent
+    0xFF000000, // 1  Black
+    0xFF21C842, // 2  Medium Green
+    0xFF5EDC78, // 3  Light Green
+    0xFF5455ED, // 4  Dark Blue
+    0xFF7D76FC, // 5  Light Blue
+    0xFFD4524D, // 6  Dark Red
+    0xFF42EBF5, // 7  Cyan
+    0xFFFC5554, // 8  Medium Red
+    0xFFFF7978, // 9  Light Red
+    0xFFD4C154, // 10 Dark Yellow
+    0xFFE6CE80, // 11 Light Yellow
+    0xFF21B03B, // 12 Dark Green
+    0xFFC95BB4, // 13 Magenta
+    0xFFCCCCCC, // 14 Gray
+    0xFFFFFFFF, // 15 White
+];
+
 pub struct Vdp {
-    pub vram: [u8; 16384], // 16KB VRAM
-    pub cram: [u8; 64],    // 64 Bytes CRAM (Game Gear demands 64)
-    pub registers: [u8; 16], // Registradores do VDP (0-10 no SMS)
-    
-    pub frame_buffer: [u32; 256 * 192], // Pixels finais a serem desenhados na janela
-    
-    // Máquina de estados da porta de controle
+    pub vram: [u8; 16384],
+    pub cram: [u8; 64],
+    pub registers: [u8; 16],
+    pub frame_buffer: [u32; 256 * 192],
+
     control_word: u16,
     first_byte_received: bool,
     mode: VdpMode,
     address_register: u16,
-    read_buffer: u8, // Buffer de leitura atrasada da VRAM
+    read_buffer: u8,
     pub vblank_flag: bool,
     pub line_interrupt_flag: bool,
     pub sprite_collision: bool,
@@ -27,12 +48,12 @@ pub struct Vdp {
     pub h_latched: bool,
     pub latched_h_counter: u8,
     pub latched_v_counter: u8,
-    pub is_gg: bool,
+    pub platform: Platform,
     pub cram_latch: u8,
 }
 
 impl Vdp {
-    pub fn new(is_gg: bool) -> Self {
+    pub fn new(platform: Platform) -> Self {
         Self {
             vram: [0; 16384],
             cram: [0; 64],
@@ -52,7 +73,7 @@ impl Vdp {
             h_latched: false,
             latched_h_counter: 0,
             latched_v_counter: 0,
-            is_gg,
+            platform,
             cram_latch: 0,
         }
     }
@@ -119,7 +140,7 @@ impl Vdp {
     }
 
     fn get_color(&self, cram_address: usize) -> u32 {
-        if self.is_gg {
+        if self.platform.is_gg() {
             // Game Gear Palette: 12-bit xxxxbbbbggggrrrr (Words at even addresses)
             let base_addr = (cram_address & 0x1F) * 2;
             let lo = self.cram[base_addr] as u16;
@@ -140,7 +161,271 @@ impl Vdp {
         }
     }
 
+    // ── TMS9918A rendering (SG-1000 / SC-3000) ───────────────────────────────
+
+    /// Determine TMS9918A rendering mode from register bits M1, M2, M3, M4.
+    fn tms_mode(&self) -> u8 {
+        let m4 = (self.registers[0] >> 2) & 1; // SMS extension — if set, use Mode 4
+        if m4 != 0 { return 4; }
+        let m1 = (self.registers[1] >> 4) & 1; // Text
+        let m3 = (self.registers[1] >> 3) & 1; // Multicolor (SMS calls this M2)
+        let m2 = (self.registers[0] >> 1) & 1; // Graphics II (SMS calls this M3)
+        match (m1, m2, m3) {
+            (0, 0, 0) => 0, // Graphics I
+            (1, 0, 0) => 1, // Text
+            (0, 1, 0) => 2, // Graphics II
+            (0, 0, 1) => 3, // Multicolor
+            _         => 0, // Undefined — fall back to Graphics I
+        }
+    }
+
+    /// TMS9918A Mode 0 — Graphics I (most common in SG-1000 games).
+    fn render_tms_mode0(&mut self, screen_y: usize) {
+        let display_enabled = (self.registers[1] & 0x40) != 0;
+        let backdrop = TMS_PALETTE[(self.registers[7] & 0x0F) as usize];
+
+        if !display_enabled {
+            for x in 0..256 { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+            return;
+        }
+
+        let name_base    = (self.registers[2] as usize & 0x0F) << 10;
+        let color_base   = (self.registers[3] as usize) << 6;
+        let pattern_base = (self.registers[4] as usize & 0x07) << 11;
+
+        let row    = screen_y / 8;
+        let tile_y = screen_y % 8;
+
+        for col in 0..32usize {
+            let tile_index   = self.vram[name_base + row * 32 + col] as usize;
+            let color_byte   = self.vram[(color_base + tile_index / 8) & 0x3FFF];
+            let pattern_byte = self.vram[(pattern_base + tile_index * 8 + tile_y) & 0x3FFF];
+
+            let fg_idx = (color_byte >> 4) as usize;
+            let bg_idx = (color_byte & 0x0F) as usize;
+            let fg = if fg_idx == 0 { backdrop } else { TMS_PALETTE[fg_idx] };
+            let bg = if bg_idx == 0 { backdrop } else { TMS_PALETTE[bg_idx] };
+
+            for bit in 0..8usize {
+                let pixel_set = (pattern_byte >> (7 - bit)) & 1 != 0;
+                self.frame_buffer[screen_y * 256 + col * 8 + bit] = if pixel_set { fg } else { bg };
+            }
+        }
+        self.render_tms_sprites(screen_y);
+    }
+
+    /// TMS9918A Mode 1 — Text (40×24, 6-pixel-wide chars, no sprites).
+    fn render_tms_mode1(&mut self, screen_y: usize) {
+        let display_enabled = (self.registers[1] & 0x40) != 0;
+        let backdrop = TMS_PALETTE[(self.registers[7] & 0x0F) as usize];
+
+        if !display_enabled {
+            for x in 0..256 { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+            return;
+        }
+
+        let name_base    = (self.registers[2] as usize & 0x0F) << 10;
+        let pattern_base = (self.registers[4] as usize & 0x07) << 11;
+        let fg_idx = (self.registers[7] >> 4) as usize;
+        let fg = if fg_idx == 0 { backdrop } else { TMS_PALETTE[fg_idx] };
+
+        let row    = screen_y / 8;
+        let tile_y = screen_y % 8;
+
+        // 8-pixel borders
+        for x in 0..8usize   { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+        for x in 248..256usize { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+
+        for col in 0..40usize {
+            let tile_index   = self.vram[(name_base + row * 40 + col) & 0x3FFF] as usize;
+            let pattern_byte = self.vram[(pattern_base + tile_index * 8 + tile_y) & 0x3FFF];
+            for bit in 0..6usize {
+                let pixel_set = (pattern_byte >> (7 - bit)) & 1 != 0;
+                self.frame_buffer[screen_y * 256 + 8 + col * 6 + bit] =
+                    if pixel_set { fg } else { backdrop };
+            }
+        }
+    }
+
+    /// TMS9918A Mode 2 — Graphics II (3 screen zones, each with own 2KB pattern+color tables).
+    fn render_tms_mode2(&mut self, screen_y: usize) {
+        let display_enabled = (self.registers[1] & 0x40) != 0;
+        let backdrop = TMS_PALETTE[(self.registers[7] & 0x0F) as usize];
+
+        if !display_enabled {
+            for x in 0..256 { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+            return;
+        }
+
+        let name_base    = (self.registers[2] as usize & 0x0F) << 10;
+        // Pattern table: bit 2 of R4 selects base 0x0000 or 0x2000; bits 1:0 are mask bits (ignored here)
+        let pattern_base = if (self.registers[4] & 0x04) != 0 { 0x2000usize } else { 0 };
+        // Color table: bit 7 of R3 selects base 0x0000 or 0x2000; bits 6:0 are mask bits (ignored here)
+        let color_base   = if (self.registers[3] & 0x80) != 0 { 0x2000usize } else { 0 };
+
+        let row    = screen_y / 8;
+        let tile_y = screen_y % 8;
+        let zone   = row / 8; // 0, 1, or 2 (each zone = 8 rows × 32 cols)
+
+        for col in 0..32usize {
+            let tile_index   = self.vram[(name_base + row * 32 + col) & 0x3FFF] as usize;
+            let tile_offset  = zone * 256 + tile_index;
+            let pattern_byte = self.vram[(pattern_base + tile_offset * 8 + tile_y) & 0x3FFF];
+            let color_byte   = self.vram[(color_base   + tile_offset * 8 + tile_y) & 0x3FFF];
+
+            let fg_idx = (color_byte >> 4) as usize;
+            let bg_idx = (color_byte & 0x0F) as usize;
+            let fg = if fg_idx == 0 { backdrop } else { TMS_PALETTE[fg_idx] };
+            let bg = if bg_idx == 0 { backdrop } else { TMS_PALETTE[bg_idx] };
+
+            for bit in 0..8usize {
+                let pixel_set = (pattern_byte >> (7 - bit)) & 1 != 0;
+                self.frame_buffer[screen_y * 256 + col * 8 + bit] = if pixel_set { fg } else { bg };
+            }
+        }
+        self.render_tms_sprites(screen_y);
+    }
+
+    /// TMS9918A Mode 3 — Multicolor (4×4 pixel color blocks).
+    fn render_tms_mode3(&mut self, screen_y: usize) {
+        let display_enabled = (self.registers[1] & 0x40) != 0;
+        let backdrop = TMS_PALETTE[(self.registers[7] & 0x0F) as usize];
+
+        if !display_enabled {
+            for x in 0..256 { self.frame_buffer[screen_y * 256 + x] = backdrop; }
+            return;
+        }
+
+        let name_base    = (self.registers[2] as usize & 0x0F) << 10;
+        let pattern_base = (self.registers[4] as usize & 0x07) << 11;
+
+        let row     = screen_y / 8;
+        // vrEmuTms9918 formula: pattRow = ((y/4)&1) + (tileY&3)*2
+        let patt_row = ((screen_y / 4) & 1) + (row & 3) * 2;
+
+        for col in 0..32usize {
+            let tile_index   = self.vram[(name_base + row * 32 + col) & 0x3FFF] as usize;
+            let pattern_byte = self.vram[(pattern_base + tile_index * 8 + patt_row) & 0x3FFF];
+
+            let left_idx  = (pattern_byte >> 4) as usize;
+            let right_idx = (pattern_byte & 0x0F) as usize;
+            let left  = if left_idx  == 0 { backdrop } else { TMS_PALETTE[left_idx] };
+            let right = if right_idx == 0 { backdrop } else { TMS_PALETTE[right_idx] };
+
+            for bit in 0..8usize {
+                self.frame_buffer[screen_y * 256 + col * 8 + bit] =
+                    if bit < 4 { left } else { right };
+            }
+        }
+        self.render_tms_sprites(screen_y);
+    }
+
+    /// TMS9918A sprite renderer — shared by modes 0, 2, 3.
+    ///
+    /// SAT: sequential 4 bytes per sprite [Y, X, Name, Attr].  32 sprites max, 4/line limit.
+    /// Y is the row above the sprite top (actual_y = Y + 1).  Y = 0xD0 terminates list.
+    /// Attr bit 7 = early clock (shift left 32 px); bits 3:0 = colour (0 = transparent).
+    fn render_tms_sprites(&mut self, screen_y: usize) {
+        let sat_base  = (self.registers[5] as usize & 0x7F) << 7;
+        let pat_base  = (self.registers[6] as usize & 0x07) << 11;
+        let is_16x16  = (self.registers[1] & 0x02) != 0;
+        let magnified = (self.registers[1] & 0x01) != 0;
+
+        let pat_size  = if is_16x16 { 16usize } else { 8 };
+        let draw_size = if magnified { pat_size * 2 } else { pat_size };
+
+        let mut sprites_on_line = 0u32;
+        let mut occupied = [false; 256];
+
+        for i in 0..32usize {
+            let base = sat_base + i * 4;
+            let y_byte = self.vram[base & 0x3FFF];
+            if y_byte == 0xD0 { break; }
+
+            let actual_y = y_byte.wrapping_add(1) as usize;
+            // Determine if this sprite intersects screen_y (with possible wrap at 256)
+            let y_in_sprite = if screen_y >= actual_y {
+                let d = screen_y - actual_y;
+                if d >= draw_size { continue; }
+                d
+            } else {
+                // Sprite wraps past line 255
+                let overflow = actual_y + draw_size;
+                if overflow <= 256 { continue; }
+                let d = 256 - actual_y + screen_y;
+                if d >= draw_size { continue; }
+                d
+            };
+
+            sprites_on_line += 1;
+            if sprites_on_line > 4 {
+                self.sprite_overflow = true;
+                break;
+            }
+
+            let x_byte = self.vram[(base + 1) & 0x3FFF];
+            let name   = self.vram[(base + 2) & 0x3FFF] as usize;
+            let attr   = self.vram[(base + 3) & 0x3FFF];
+            let color_idx = (attr & 0x0F) as usize;
+            if color_idx == 0 { continue; } // transparent
+
+            let early_clock = (attr & 0x80) != 0;
+            let x_origin = x_byte as i32 - if early_clock { 32 } else { 0 };
+            let color = TMS_PALETTE[color_idx];
+
+            // Row within the pattern (undo magnification)
+            let pat_row = if magnified { y_in_sprite / 2 } else { y_in_sprite };
+
+            // For 16×16 sprites the four 8×8 tiles are laid out in VRAM as:
+            //   N+0: left column rows 0-7   N+1: left column rows 8-15
+            //   N+2: right column rows 0-7  N+3: right column rows 8-15
+            let tile_cols = if is_16x16 { 2usize } else { 1 };
+
+            for tc in 0..tile_cols {
+                let tile_index = if is_16x16 {
+                    // tc*2 selects left(0) or right(2); +1 if in the bottom half
+                    (name & 0xFC) + tc * 2 + if pat_row >= 8 { 1 } else { 0 }
+                } else {
+                    name
+                };
+                let tile_row_in_pat = if is_16x16 { pat_row % 8 } else { pat_row };
+                let pat_byte = self.vram[(pat_base + tile_index * 8 + tile_row_in_pat) & 0x3FFF];
+
+                for bit in 0..8usize {
+                    if (pat_byte >> (7 - bit)) & 1 == 0 { continue; }
+
+                    let pixel_count = if magnified { 2 } else { 1 };
+                    for m in 0..pixel_count {
+                        let draw_x = x_origin
+                            + (tc * if magnified { 16 } else { 8 }) as i32
+                            + (bit * pixel_count + m) as i32;
+                        if draw_x < 0 || draw_x >= 256 { continue; }
+                        let dx = draw_x as usize;
+                        if occupied[dx] {
+                            self.sprite_collision = true;
+                        } else {
+                            self.frame_buffer[screen_y * 256 + dx] = color;
+                            occupied[dx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn render_scanline(&mut self, screen_y: usize) {
+        // SG-1000 / SC-3000 use TMS9918A modes (not SMS Mode 4)
+        if self.platform.is_sg_family() {
+            match self.tms_mode() {
+                1 => self.render_tms_mode1(screen_y),
+                2 => self.render_tms_mode2(screen_y),
+                3 => self.render_tms_mode3(screen_y),
+                _ => self.render_tms_mode0(screen_y),
+            }
+            return;
+        }
+
+        // ── SMS / Game Gear — Mode 4 ──────────────────────────────────────────
         let display_enabled = (self.registers[1] & 0x40) != 0;
         let backdrop_color = self.get_color(16 + (self.registers[7] & 0x0F) as usize);
 
@@ -369,7 +654,7 @@ impl Vdp {
             },
             VdpMode::CramWrite => {
                 let addr = (self.address_register & 0x3F) as usize;
-                if self.is_gg {
+                if self.platform.is_gg() {
                     if addr % 2 == 0 {
                         self.cram_latch = value;
                     } else {
