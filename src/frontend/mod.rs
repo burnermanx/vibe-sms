@@ -45,6 +45,66 @@ fn build_audio_stream() -> (Arc<Mutex<Vec<f32>>>, f32, Option<Stream>) {
     (buffer, sample_rate, stream)
 }
 
+// ── SRAM helpers ───────────────────────────────────────────────────────────────
+
+fn sram_path(rom_path: &PathBuf) -> PathBuf {
+    rom_path.with_extension("sav")
+}
+
+fn save_sram(emu: &Emulator, rom_path: &PathBuf) {
+    let data = emu.get_cart_ram();
+    let path = sram_path(rom_path);
+    match std::fs::write(&path, &data) {
+        Ok(_) => {
+            emu.clear_sram_dirty();
+            println!("SRAM saved to {}", path.display());
+        }
+        Err(e) => eprintln!("Failed to save SRAM: {e}"),
+    }
+}
+
+fn load_sram_into(emu: &Emulator, rom_path: &PathBuf) {
+    let path = sram_path(rom_path);
+    match std::fs::read(&path) {
+        Ok(data) => {
+            emu.load_cart_ram(&data);
+            println!("SRAM loaded from {}", path.display());
+        }
+        Err(_) => {} // No save file yet — that's fine
+    }
+}
+
+// ── EEPROM helpers ─────────────────────────────────────────────────────────────
+
+fn eeprom_path(rom_path: &PathBuf) -> PathBuf {
+    rom_path.with_extension("eep")
+}
+
+fn save_eeprom(emu: &Emulator, rom_path: &PathBuf) {
+    if let Some(data) = emu.get_eeprom_data() {
+        let path = eeprom_path(rom_path);
+        match std::fs::write(&path, &data) {
+            Ok(_) => {
+                emu.clear_eeprom_dirty();
+                println!("EEPROM saved to {}", path.display());
+            }
+            Err(e) => eprintln!("Failed to save EEPROM: {e}"),
+        }
+    }
+}
+
+fn load_eeprom_into(emu: &Emulator, rom_path: &PathBuf) {
+    if !emu.has_eeprom() { return; }
+    let path = eeprom_path(rom_path);
+    match std::fs::read(&path) {
+        Ok(data) => {
+            emu.load_eeprom_data(&data);
+            println!("EEPROM loaded from {}", path.display());
+        }
+        Err(_) => {} // No save file yet — that's fine
+    }
+}
+
 // ── ROM loader ─────────────────────────────────────────────────────────────────
 
 fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
@@ -56,6 +116,8 @@ fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emula
                 .unwrap_or(false);
             let emu = Emulator::new(data, is_gg, sample_rate);
             emu.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = !is_gg && fm_disabled;
+            load_sram_into(&emu, path);
+            load_eeprom_into(&emu, path);
             println!("Loaded ROM: {} (GG: {})", path.file_stem().and_then(|n| n.to_str()).unwrap_or("?"), is_gg);
             Some(emu)
         }
@@ -150,6 +212,7 @@ struct VibeApp {
 
     last_frame:   Instant,
     time_debt_us: i64,
+    sram_save_timer: u32, // frames since last SRAM save check
 
     // UI state
     show_key_config: bool,
@@ -169,7 +232,7 @@ impl VibeApp {
             texture: None, fb: vec![0u32; SMS_W * SMS_H],
             gilrs, pad: PadState::default(), key_config: KeyConfig::default(),
             mx: 0, my: 0, trigger_frames: 0,
-            last_frame: Instant::now(), time_debt_us: 0,
+            last_frame: Instant::now(), time_debt_us: 0, sram_save_timer: 0,
             show_key_config: false, show_about: false, show_fm_notice: false,
             binding: None,
             window_title: "vibe-sms".to_string(),
@@ -250,9 +313,15 @@ impl eframe::App for VibeApp {
                             .add_filter("Sega 8-bit ROMs", &["sms", "sg", "gg", "SMS", "SG", "GG"])
                             .pick_file();
                         if let Some(p) = path {
+                            // Save current SRAM/EEPROM before replacing the emulator
+                            if let (Some(ref e), Some(ref rp)) = (&self.emu, &self.rom_path) {
+                                if e.is_sram_dirty()   { save_sram(e, rp); }
+                                if e.is_eeprom_dirty() { save_eeprom(e, rp); }
+                            }
                             if let Some(e) = load_rom(&p, self.sample_rate, self.fm_disabled) {
                                 self.rom_path = Some(p);
                                 self.emu = Some(e);
+                                self.sram_save_timer = 0;
                             }
                         }
                     }
@@ -260,12 +329,23 @@ impl eframe::App for VibeApp {
                     ui.add_enabled_ui(self.rom_path.is_some(), |ui| {
                         if ui.button("Reset").clicked() {
                             ui.close();
+                            // Save SRAM/EEPROM before reset
+                            if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+                                if e.is_sram_dirty()   { save_sram(e, p); }
+                                if e.is_eeprom_dirty() { save_eeprom(e, p); }
+                            }
                             if let Some(ref p) = self.rom_path.clone() {
                                 self.emu = load_rom(p, self.sample_rate, self.fm_disabled);
+                                self.sram_save_timer = 0;
                             }
                         }
                         if ui.button("Stop").clicked() {
                             ui.close();
+                            // Save SRAM/EEPROM before stopping
+                            if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+                                if e.is_sram_dirty()   { save_sram(e, p); }
+                                if e.is_eeprom_dirty() { save_eeprom(e, p); }
+                            }
                             self.emu = None;
                             self.rom_path = None;
                             self.fb.iter_mut().for_each(|p| *p = 0);
@@ -339,6 +419,16 @@ impl eframe::App for VibeApp {
                     if let Ok(mut buf) = self.audio_buf.try_lock() {
                         buf.append(&mut samples);
                         if buf.len() > 8192 { let excess = buf.len() - 8192; buf.drain(0..excess); }
+                    }
+
+                    // Auto-save SRAM/EEPROM every ~5 seconds (300 frames) when dirty
+                    self.sram_save_timer += 1;
+                    if self.sram_save_timer >= 300 {
+                        self.sram_save_timer = 0;
+                        if let Some(ref p) = self.rom_path {
+                            if e.is_sram_dirty()   { save_sram(e, p); }
+                            if e.is_eeprom_dirty() { save_eeprom(e, p); }
+                        }
                     }
 
                     // Blit framebuffer

@@ -1,6 +1,7 @@
 mod audio;
 mod bus;
 pub mod core;
+mod eeprom;
 pub mod frontend;
 mod joypad;
 mod mmu;

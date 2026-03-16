@@ -204,4 +204,55 @@ impl Emulator {
         bus.joypad.mouse_x = x;
         bus.joypad.mouse_y = y;
     }
+
+    // ── EEPROM persistence ────────────────────────────────────────────────────
+
+    pub fn has_eeprom(&self) -> bool {
+        self.cpu.io.bus.borrow().mmu.eeprom.is_some()
+    }
+
+    pub fn is_eeprom_dirty(&self) -> bool {
+        self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.dirty).unwrap_or(false)
+    }
+
+    pub fn clear_eeprom_dirty(&self) {
+        if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
+            eeprom.dirty = false;
+        }
+    }
+
+    pub fn get_eeprom_data(&self) -> Option<Vec<u8>> {
+        self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.data.to_vec())
+    }
+
+    pub fn load_eeprom_data(&self, data: &[u8]) {
+        if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
+            let len = data.len().min(eeprom.data.len());
+            eeprom.data[..len].copy_from_slice(&data[..len]);
+            eeprom.dirty = false;
+        }
+    }
+
+    // ── SRAM persistence ──────────────────────────────────────────────────────
+
+    pub fn is_sram_dirty(&self) -> bool {
+        self.cpu.io.bus.borrow().mmu.sram_dirty
+    }
+
+    pub fn clear_sram_dirty(&self) {
+        self.cpu.io.bus.borrow_mut().mmu.sram_dirty = false;
+    }
+
+    /// Returns a copy of the 16KB cart RAM.
+    pub fn get_cart_ram(&self) -> Vec<u8> {
+        self.cpu.io.bus.borrow().mmu.cart_ram.to_vec()
+    }
+
+    /// Overwrites cart RAM with the given data (used when loading a .sav file).
+    pub fn load_cart_ram(&self, data: &[u8]) {
+        let mut bus = self.cpu.io.bus.borrow_mut();
+        let len = data.len().min(bus.mmu.cart_ram.len());
+        bus.mmu.cart_ram[..len].copy_from_slice(&data[..len]);
+        bus.mmu.sram_dirty = false;
+    }
 }

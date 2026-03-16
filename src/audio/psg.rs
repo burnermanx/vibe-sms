@@ -209,3 +209,110 @@ impl Psg {
         (mixed_l * MAX_VOLUME, mixed_r * MAX_VOLUME)
     }
 }
+
+// ── Testes ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Protocolo latch/data ──────────────────────────────────────────────────
+
+    #[test]
+    fn latch_byte_selects_tone0_low_nibble() {
+        let mut psg = Psg::new(false, 44100.0);
+        // Latch byte: bit7=1, bits6-4=000 (reg 0 = tom 0), bits3-0=0b1010
+        psg.write_data(0x80 | 0x0A);
+        assert_eq!(psg.registers[0] & 0x0F, 0x0A, "nibble baixo do registro 0");
+    }
+
+    #[test]
+    fn data_byte_updates_upper_6_bits_of_tone() {
+        let mut psg = Psg::new(false, 44100.0);
+        // Primeiro faz latch no reg 0 com nibble baixo = 0x05
+        psg.write_data(0x85); // latch reg0, data=5
+        // Data byte: bit7=0, bits5-0 = upper 6 bits
+        psg.write_data(0x0F); // upper bits = 0x0F
+        // registers[0] = (0x0F << 4) | 0x05 = 0xF5
+        assert_eq!(psg.registers[0], 0xF5);
+    }
+
+    #[test]
+    fn latch_byte_selects_volume_register() {
+        let mut psg = Psg::new(false, 44100.0);
+        // Reg 1 (volume do canal 0): latch byte = 1 ccc t dddd → ccc=000, t=1 → reg índice 1
+        // byte = 0x80 | (0b001 << 4) | 0x07 = 0x97
+        psg.write_data(0x97);
+        assert_eq!(psg.registers[1], 0x07, "volume do canal 0 deve ser 7");
+    }
+
+    #[test]
+    fn volume_15_produces_silence() {
+        // Volume 15 = silêncio na tabela de volumes do PSG
+        let mut psg = Psg::new(false, 44100.0);
+        // Todos os canais já iniciam com volume 0x0F (silêncio)
+        let (l, r) = psg.generate_sample();
+        assert_eq!(l, 0.0, "canal silencioso deve produzir sample 0.0");
+        assert_eq!(r, 0.0);
+    }
+
+    #[test]
+    fn volume_0_produces_nonzero_output() {
+        // Canal 0 com tom e volume = 0 (máximo)
+        let mut psg = Psg::new(false, 44100.0);
+        // Configura tom 0 = 0x001 (frequência bem alta para garantir saída não-zero)
+        psg.write_data(0x81); // latch reg0, data=1 → lower nibble = 1
+        psg.write_data(0x00); // data byte: upper 6 bits = 0 → reg[0] = 1
+        // Volume 0 = amplitude máxima: reg1 = 0
+        psg.write_data(0x90); // latch reg1, data=0
+        // Gera alguns samples para avançar o estado
+        let mut nonzero = false;
+        for _ in 0..100 {
+            let (l, _r) = psg.generate_sample();
+            if l != 0.0 { nonzero = true; break; }
+        }
+        assert!(nonzero, "canal com volume máximo deve produzir saída não-zero");
+    }
+
+    #[test]
+    fn noise_control_write_resets_lfsr() {
+        let mut psg = Psg::new(false, 44100.0);
+        // Avança o LFSR gerando alguns samples
+        psg.write_data(0x90); // volume 0 no noise
+        for _ in 0..50 { psg.generate_sample(); }
+        // Escreve no registro de controle do noise (reg 6)
+        psg.write_data(0x80 | (0b110 << 4) | 0x00); // latch reg6
+        assert_eq!(psg.noise_lfsr, 0x8000, "escrever no noise control deve resetar o LFSR");
+    }
+
+    #[test]
+    fn stereo_write_only_affects_gg() {
+        let mut psg_sms = Psg::new(false, 44100.0);
+        psg_sms.write_stereo(0x00); // não-GG ignora
+        assert_eq!(psg_sms.stereo, 0xFF, "SMS ignora write_stereo");
+
+        let mut psg_gg = Psg::new(true, 44100.0);
+        psg_gg.write_stereo(0x0F);
+        assert_eq!(psg_gg.stereo, 0x0F, "GG aplica write_stereo");
+    }
+
+    #[test]
+    fn tone0_zero_treated_as_0x400() {
+        // Quando registrador de tom = 0, o contador deve recarregar com 0x400
+        // Isso é verificado indiretamente: a saída não deve travar (sample gerado sem panic)
+        let mut psg = Psg::new(false, 44100.0);
+        psg.write_data(0x80); // latch reg0, data=0
+        psg.write_data(0x00); // upper 6 bits = 0 → reg[0] = 0
+        psg.write_data(0x90); // volume 0
+        for _ in 0..200 { psg.generate_sample(); } // não deve panicar
+    }
+
+    #[test]
+    fn all_channels_start_silent() {
+        let psg = Psg::new(false, 44100.0);
+        assert_eq!(psg.registers[1], 0x0F, "vol canal 0 inicia em 15 (silêncio)");
+        assert_eq!(psg.registers[3], 0x0F, "vol canal 1 inicia em 15");
+        assert_eq!(psg.registers[5], 0x0F, "vol canal 2 inicia em 15");
+        assert_eq!(psg.registers[7], 0x0F, "vol noise inicia em 15");
+    }
+}

@@ -70,3 +70,103 @@ impl Joypad {
         port
     }
 }
+
+// ── Testes ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_buttons_all_high() {
+        let j = Joypad::new(false);
+        assert_eq!(j.read_port_dc() & 0x3F, 0x3F, "todos os botões soltos → bits 0-5 em 1");
+    }
+
+    #[test]
+    fn up_clears_bit0() {
+        let mut j = Joypad::new(false);
+        j.p1_up = true;
+        assert_eq!(j.read_port_dc() & 0x01, 0, "up pressed → bit 0 = 0 (active-low)");
+        assert_ne!(j.read_port_dc() & 0x3E, 0, "outros bits devem continuar em 1");
+    }
+
+    #[test]
+    fn down_clears_bit1() {
+        let mut j = Joypad::new(false);
+        j.p1_down = true;
+        assert_eq!(j.read_port_dc() & 0x02, 0);
+    }
+
+    #[test]
+    fn left_clears_bit2() {
+        let mut j = Joypad::new(false);
+        j.p1_left = true;
+        assert_eq!(j.read_port_dc() & 0x04, 0);
+    }
+
+    #[test]
+    fn right_clears_bit3() {
+        let mut j = Joypad::new(false);
+        j.p1_right = true;
+        assert_eq!(j.read_port_dc() & 0x08, 0);
+    }
+
+    #[test]
+    fn b1_clears_bit4() {
+        let mut j = Joypad::new(false);
+        j.p1_b1 = true;
+        assert_eq!(j.read_port_dc() & 0x10, 0);
+    }
+
+    #[test]
+    fn b2_clears_bit5() {
+        let mut j = Joypad::new(false);
+        j.p1_b2 = true;
+        assert_eq!(j.read_port_dc() & 0x20, 0);
+    }
+
+    #[test]
+    fn multiple_buttons_simultaneously() {
+        let mut j = Joypad::new(false);
+        j.p1_up = true;
+        j.p1_b1 = true;
+        let dc = j.read_port_dc();
+        assert_eq!(dc & 0x01, 0, "up deve estar ativo");
+        assert_eq!(dc & 0x10, 0, "b1 deve estar ativo");
+        assert_eq!(dc & 0x22, 0x22, "down e b2 devem estar soltos");
+    }
+
+    #[test]
+    fn th_pin_low_clears_bit6_of_port_dd() {
+        let mut j = Joypad::new(false);
+        j.th_pin_low = true;
+        assert_eq!(j.read_port_dd() & 0x40, 0, "TH baixo → bit 6 = 0");
+    }
+
+    #[test]
+    fn th_pin_high_keeps_bit6_of_port_dd() {
+        let j = Joypad::new(false);
+        assert_ne!(j.read_port_dd() & 0x40, 0, "TH alto → bit 6 = 1");
+    }
+
+    #[test]
+    fn gg_start_not_pressed_returns_0xff() {
+        let j = Joypad::new(true);
+        assert_eq!(j.read_port_00(), 0xFF, "start solto → bit 7 = 1 → 0xFF");
+    }
+
+    #[test]
+    fn gg_start_pressed_clears_bit7() {
+        let mut j = Joypad::new(true);
+        j.gg_start = true;
+        assert_eq!(j.read_port_00(), 0x7F, "start pressionado → bit 7 = 0 → 0x7F");
+    }
+
+    #[test]
+    fn write_port_3f_stores_value() {
+        let mut j = Joypad::new(false);
+        j.write_port_3f(0xAB);
+        assert_eq!(j.port_3f, 0xAB);
+    }
+}
