@@ -16,3 +16,24 @@ impl Platform {
         matches!(self, Platform::Sg1000 | Platform::Sc3000)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_gg_only_for_game_gear() {
+        assert!(Platform::GameGear.is_gg());
+        assert!(!Platform::MasterSystem.is_gg());
+        assert!(!Platform::Sg1000.is_gg());
+        assert!(!Platform::Sc3000.is_gg());
+    }
+
+    #[test]
+    fn is_sg_family_for_sg_and_sc_only() {
+        assert!(Platform::Sg1000.is_sg_family());
+        assert!(Platform::Sc3000.is_sg_family());
+        assert!(!Platform::MasterSystem.is_sg_family());
+        assert!(!Platform::GameGear.is_sg_family());
+    }
+}

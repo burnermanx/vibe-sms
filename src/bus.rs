@@ -115,6 +115,159 @@ impl System {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Platform;
+
+    fn make_sms_bus() -> Bus {
+        Bus::new(vec![0u8; 0xC000], Platform::MasterSystem, 44100.0)
+    }
+
+    // ── V/H counter reads (ports 0x40–0x7F) ──────────────────────────────────
+
+    #[test]
+    fn read_vcounter_on_even_ports_40_7f() {
+        let mut bus = make_sms_bus();
+        bus.vdp.v_counter = 0xAA;
+        assert_eq!(bus.read_io(0x40), 0xAA);
+        assert_eq!(bus.read_io(0x7E), 0xAA);
+    }
+
+    #[test]
+    fn read_hcounter_on_odd_ports_40_7f() {
+        let mut bus = make_sms_bus();
+        bus.vdp.h_counter = 0x55;
+        assert_eq!(bus.read_io(0x41), 0x55);
+        assert_eq!(bus.read_io(0x7F), 0x55);
+    }
+
+    // ── PSG writes (ports 0x40–0x7F) ─────────────────────────────────────────
+
+    #[test]
+    fn write_psg_latch_updates_tone_register() {
+        let mut bus = make_sms_bus();
+        // Latch byte: ch0 tone, lower nibble = 1
+        bus.write_io(0x7E, 0x81);
+        assert_eq!(bus.mixer.psg.registers[0] & 0x0F, 1);
+    }
+
+    #[test]
+    fn write_psg_volume_register() {
+        let mut bus = make_sms_bus();
+        // Latch byte: ch0 volume = 5  (bit7=1, bits6-5=ch0, bit4=vol, bits3-0=5)
+        bus.write_io(0x40, 0x95);
+        assert_eq!(bus.mixer.psg.registers[1], 5);
+    }
+
+    // ── Joypad reads (ports 0xC0–0xFF) ───────────────────────────────────────
+
+    #[test]
+    fn read_joypad_port_a_on_even_ports_c0_ff() {
+        let mut bus = make_sms_bus();
+        assert_eq!(bus.read_io(0xC0), 0xFF); // no buttons
+        assert_eq!(bus.read_io(0xDC), 0xFF);
+        assert_eq!(bus.read_io(0xFE), 0xFF);
+    }
+
+    #[test]
+    fn read_joypad_port_b_on_odd_ports_c0_ff() {
+        let mut bus = make_sms_bus();
+        assert_eq!(bus.read_io(0xC1), 0xFF);
+        assert_eq!(bus.read_io(0xDD), 0xFF);
+        assert_eq!(bus.read_io(0xFF), 0xFF);
+    }
+
+    // ── Port 0x00 (GG Start) ──────────────────────────────────────────────────
+
+    #[test]
+    fn read_port_00_on_sms_returns_0xff() {
+        let mut bus = make_sms_bus();
+        assert_eq!(bus.read_io(0x00), 0xFF);
+    }
+
+    #[test]
+    fn read_port_00_on_gg_returns_joypad_byte() {
+        let mut bus = Bus::new(vec![0u8; 0xC000], Platform::GameGear, 44100.0);
+        // Start not pressed → bit 7 high
+        assert_eq!(bus.read_io(0x00) & 0x80, 0x80);
+    }
+
+    // ── VDP reads/writes (ports 0x80–0xBF) ───────────────────────────────────
+
+    #[test]
+    fn write_two_vdp_control_bytes_sets_vram_write_mode() {
+        let mut bus = make_sms_bus();
+        // Two consecutive writes: first byte (low addr), second byte (command 01 = VramWrite)
+        bus.write_io(0x81, 0x05); // addr low = 0x05
+        bus.write_io(0x81, 0x40); // command 01, addr high = 0x00 → addr = 0x0005, VramWrite
+        // Verify by writing data and checking VRAM
+        bus.write_io(0x80, 0xAB);
+        assert_eq!(bus.vdp.vram[0x05], 0xAB);
+    }
+
+    #[test]
+    fn write_vdp_data_on_even_ports_writes_vram() {
+        let mut bus = make_sms_bus();
+        // Set VDP to VRAM write mode (address 0, command 01xx_xxxx)
+        bus.vdp.write_control(0x00);
+        bus.vdp.write_control(0x40);
+        bus.write_io(0x80, 0x42);
+        assert_eq!(bus.vdp.vram[0], 0x42);
+    }
+
+    // ── GG stereo port 0x06 ───────────────────────────────────────────────────
+
+    #[test]
+    fn write_port_06_sets_gg_stereo() {
+        let mut bus = Bus::new(vec![0u8; 0xC000], Platform::GameGear, 44100.0);
+        bus.write_io(0x06, 0xFF);
+        assert_eq!(bus.mixer.psg.stereo, 0xFF);
+    }
+
+    #[test]
+    fn write_port_06_ignored_on_sms() {
+        let mut bus = make_sms_bus();
+        let before = bus.mixer.psg.stereo;
+        bus.write_io(0x06, 0xFF);
+        assert_eq!(bus.mixer.psg.stereo, before);
+    }
+
+    // ── FM ports 0xF0–0xF2 ───────────────────────────────────────────────────
+
+    #[test]
+    fn write_f2_enables_fm() {
+        let mut bus = make_sms_bus();
+        bus.write_io(0xF2, 0x01);
+        assert_eq!(bus.read_io(0xF2), 0x01);
+    }
+
+    #[test]
+    fn write_f2_disables_fm() {
+        let mut bus = make_sms_bus();
+        bus.write_io(0xF2, 0x01);
+        bus.write_io(0xF2, 0x00);
+        assert_eq!(bus.read_io(0xF2), 0x00);
+    }
+
+    #[test]
+    fn user_disabled_fm_blocks_f2_enable() {
+        let mut bus = make_sms_bus();
+        bus.mixer.fm.user_disabled = true;
+        bus.write_io(0xF2, 0x01);
+        assert_eq!(bus.read_io(0xF2), 0x00);
+    }
+
+    // ── Unmapped ports ────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_unmapped_ports_return_0xff() {
+        let mut bus = make_sms_bus();
+        assert_eq!(bus.read_io(0x20), 0xFF);
+        assert_eq!(bus.read_io(0x38), 0xFF);
+    }
+}
+
 impl z80::Z80_io for System {
     fn read_byte(&self, addr: u16) -> u8 {
         self.bus.borrow_mut().read(addr)
