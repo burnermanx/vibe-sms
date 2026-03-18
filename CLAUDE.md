@@ -79,6 +79,12 @@ src/frontend/
 
 **File dialog on Linux/Wayland**: `rfd::AsyncFileDialog` spawned via `glib::MainContext::default().spawn_local()`; the glib context is pumped each frame in `about_to_wait()`. GTK is single-threaded — never call rfd from a background thread.
 
+**File dialog on macOS/Windows**: `rfd::AsyncFileDialog` + `pollster::block_on` in a background thread; GCD dispatches NSOpenPanel to the main thread internally.
+
+**Windows console**: suppressed at link time via `#![cfg_attr(windows, windows_subsystem = "windows")]`; pass `--debug`/`-d` at runtime to re-enable via `AllocConsole()`.
+
+**Stack size**: increased to 32 MB via linker flags in `build.rs` — `/STACK:33554432` (Windows MSVC), `-Wl,--stack,33554432` (Windows MinGW), `-Wl,-stack_size,0x2000000` (macOS).
+
 **FM/PSG balance**: YM2413 per-channel output tops at ~±0.063 after /32768 normalisation; PSG MAX_VOLUME = 0.25. Mixer applies `FM_GAIN = 4.0` before summing.
 
 **Light Phaser**: mouse position maps to emulated screen coords. When the rendered pixel exceeds brightness threshold 750 (R+G+B sum), H/V counters are latched and TH pin pulled low.
@@ -86,3 +92,5 @@ src/frontend/
 **Assets**: `assets/icon.png` embedded at compile time via `include_bytes!` in `app.rs`.
 
 **egui menu bar (Linux only)**: rendered by `egui_ui.rs::draw_linux_menu`; height stored in `DialogState::menu_bar_height` and converted to physical pixels to offset the OpenGL letterbox rect.
+
+**Code quality**: zero `cargo clippy` warnings. 142 unit tests covering core, bus, VDP, PSG, FM mixer, savestate, and platform modules. Path parameters use `&Path` (not `&PathBuf`) throughout `app.rs`.

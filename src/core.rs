@@ -49,10 +49,10 @@ impl Emulator {
                 cycles_run = 4; // NOP (Halt state)
             }
             
-            frame_cycles += cycles_run as u32;
+            frame_cycles += cycles_run;
             self.cycles_accumulator += cycles_run as i32;
-            
-            sample_cycles_accumulator += cycles_run as u32;
+
+            sample_cycles_accumulator += cycles_run;
             while sample_cycles_accumulator >= cycles_per_sample {
                 sample_cycles_accumulator -= cycles_per_sample;
                 let (sample_l, sample_r) = self.cpu.io.bus.borrow_mut().mixer.generate_sample();
@@ -116,7 +116,7 @@ impl Emulator {
                     let my = self.cpu.io.bus.borrow().joypad.mouse_y;
                     
                     // We check the exact row we just rendered!
-                    if self.vcounter as u16 == my {
+                    if self.vcounter == my {
                         let mx = self.cpu.io.bus.borrow().joypad.mouse_x;
                         
                         let pixel = self.cpu.io.bus.borrow().vdp.frame_buffer[(my as usize) * 256 + (mx as usize)];
@@ -126,17 +126,13 @@ impl Emulator {
                         
                         // Average brightness threshold (pure white flash is 765)
                         if (r + g + b) >= 750 {
-                            if self.cpu.io.bus.borrow().joypad.lightgun_active {
-                                println!("LIGHT GUN HIT DETECTED! mx: {}, my: {}, color: {}", mx, my, r+g+b);
-                            }
-                            
-                            let phaser_h_counter = 16 + (mx >> 1);
+                                let phaser_h_counter = 16 + (mx >> 1);
                             
                             self.cpu.io.bus.borrow_mut().vdp.h_counter = phaser_h_counter as u8;
                             self.cpu.io.bus.borrow_mut().vdp.latch_h_v_counters();
                             self.cpu.io.bus.borrow_mut().joypad.th_pin_low = true; // Stay low until CPU reads it or Vblank!
                         }
-                    } else if self.vcounter as u16 > my + 8 || self.vcounter < my {
+                    } else if self.vcounter > my + 8 || self.vcounter < my {
                         // Automatically release the TH switch right after 8 scanlines (creating a realistic physical sensor pulse).
                         self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
                     }
@@ -168,7 +164,7 @@ impl Emulator {
     }
 
     pub fn get_framebuffer(&self) -> [u32; 256 * 192] {
-        let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer.clone();
+        let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer;
         // Strip the internal priority encoding bit before output
         for pixel in fb.iter_mut() {
             *pixel = (*pixel & 0x00FFFFFF) | 0xFF000000;
@@ -177,6 +173,7 @@ impl Emulator {
     }
 
     // Proxy commands to joypad
+    #[allow(clippy::too_many_arguments)]
     pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
         let mut bus = self.cpu.io.bus.borrow_mut();
         // Detect rising edge of Start/Pause button
@@ -327,5 +324,203 @@ impl Emulator {
         let len = data.len().min(bus.mmu.cart_ram.len());
         bus.mmu.cart_ram[..len].copy_from_slice(&data[..len]);
         bus.mmu.sram_dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Platform;
+
+    /// A 48 KB ROM filled with 0x00 (NOP). The Z80 spins through NOPs indefinitely.
+    fn nop_rom() -> Vec<u8> { vec![0u8; 0xC000] }
+
+    fn make_emu() -> Emulator {
+        Emulator::new(nop_rom(), Platform::MasterSystem, 44100.0)
+    }
+
+    /// Runs `f` on a thread with a 32 MB stack to avoid overflow in debug builds.
+    /// `step_frame` triggers deep Z80 dispatch which exceeds the default 2 MB test stack.
+    fn with_large_stack<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    // ── step_frame audio ──────────────────────────────────────────────────────
+
+    #[test]
+    fn step_frame_produces_stereo_audio_samples() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            let (_, audio) = emu.step_frame();
+            assert_eq!(audio.len() % 2, 0, "audio buffer must contain stereo pairs");
+            assert!(
+                audio.len() >= 1400 && audio.len() <= 1600,
+                "expected ~1470 samples (735 pairs), got {}",
+                audio.len()
+            );
+        });
+    }
+
+    #[test]
+    fn step_frame_audio_is_silent_with_no_active_channels() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            let (_, audio) = emu.step_frame();
+            // All PSG volumes default to 15 (silent) and FM is disabled.
+            assert!(audio.iter().all(|&s| s == 0.0), "all samples should be 0 with silent channels");
+        });
+    }
+
+    #[test]
+    fn consecutive_frames_each_produce_audio() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            for _ in 0..5 {
+                let (_, audio) = emu.step_frame();
+                assert!(!audio.is_empty());
+            }
+        });
+    }
+
+    // ── vcounter / vblank ─────────────────────────────────────────────────────
+
+    #[test]
+    fn vblank_flag_set_on_frame_ready() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            let (frame_ready, _) = emu.step_frame();
+            assert!(frame_ready, "step_frame must return frame_ready=true at vblank");
+        });
+    }
+
+    #[test]
+    fn vcounter_resets_to_zero_each_frame() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.step_frame();
+            assert_eq!(emu.vcounter, 0);
+        });
+    }
+
+    #[test]
+    fn step_frame_advances_vcounter_to_262_lines() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.step_frame();
+            assert!(emu.vcounter <= 261);
+        });
+    }
+
+    // ── set_input / NMI ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_input_does_not_panic() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.set_input(true, false, true, false, true, false, false);
+            emu.set_input(false, false, false, false, false, false, false);
+        });
+    }
+
+    #[test]
+    fn sms_start_button_rising_edge_triggers_nmi() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.set_input(false, false, false, false, false, false, false);
+            emu.set_input(false, false, false, false, false, false, true);
+            assert_eq!(emu.cpu.nmi_pending, 1);
+        });
+    }
+
+    #[test]
+    fn gg_start_button_does_not_trigger_nmi() {
+        with_large_stack(|| {
+            let mut emu = Emulator::new(nop_rom(), Platform::GameGear, 44100.0);
+            emu.set_input(false, false, false, false, false, false, true);
+            assert_eq!(emu.cpu.nmi_pending, 0);
+        });
+    }
+
+    // ── set_lightgun ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_lightgun_updates_bus_state() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.set_lightgun(true, 128, 96);
+            let bus = emu.cpu.io.bus.borrow();
+            assert!(bus.joypad.lightgun_active);
+            assert_eq!(bus.joypad.mouse_x, 128);
+            assert_eq!(bus.joypad.mouse_y, 96);
+        });
+    }
+
+    // ── get_framebuffer ───────────────────────────────────────────────────────
+
+    #[test]
+    fn get_framebuffer_strips_priority_encoding_bit() {
+        with_large_stack(|| {
+            let emu = make_emu();
+            emu.cpu.io.bus.borrow_mut().vdp.frame_buffer[0] = 0x01AABBCC;
+            let fb = emu.get_framebuffer();
+            assert_eq!(fb[0], 0xFFAABBCC, "priority bit must be stripped and alpha forced to 0xFF");
+        });
+    }
+
+    #[test]
+    fn get_framebuffer_has_correct_size() {
+        with_large_stack(|| {
+            let emu = make_emu();
+            let fb = emu.get_framebuffer();
+            assert_eq!(fb.len(), 256 * 192);
+        });
+    }
+
+    // ── save_state / load_state roundtrip ────────────────────────────────────
+
+    #[test]
+    fn save_load_state_roundtrip_preserves_vcounter() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.step_frame();
+            emu.vcounter = 42;
+            let state = emu.save_state();
+            emu.vcounter = 0;
+            emu.load_state(state);
+            assert_eq!(emu.vcounter, 42);
+        });
+    }
+
+    #[test]
+    fn save_load_state_roundtrip_preserves_vram() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.cpu.io.bus.borrow_mut().vdp.vram[0x100] = 0xAB;
+            let state = emu.save_state();
+            emu.cpu.io.bus.borrow_mut().vdp.vram[0x100] = 0x00;
+            emu.load_state(state);
+            assert_eq!(emu.cpu.io.bus.borrow().vdp.vram[0x100], 0xAB);
+        });
+    }
+
+    #[test]
+    fn save_load_state_roundtrip_preserves_cpu_pc() {
+        with_large_stack(|| {
+            let mut emu = make_emu();
+            emu.cpu.pc = 0x1234;
+            let state = emu.save_state();
+            emu.cpu.pc = 0;
+            emu.load_state(state);
+            assert_eq!(emu.cpu.pc, 0x1234);
+        });
     }
 }

@@ -184,7 +184,7 @@ fn bytemuck_cast(data: &[f32]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             data.as_ptr() as *const u8,
-            data.len() * std::mem::size_of::<f32>(),
+            std::mem::size_of_val(data),
         )
     }
 }

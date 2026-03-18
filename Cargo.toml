@@ -37,7 +37,9 @@ gtk  = "0.18"
 glib = "0.18"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-rfd = { version = "0.15" }
+rfd      = { version = "0.15" }
+pollster = "0.3"
+
 
 [build-dependencies]
 cc = "1.0"

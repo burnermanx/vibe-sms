@@ -1,6 +1,6 @@
 use crate::platform::Platform;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum VdpMode {
     VramRead,
     VramWrite,
@@ -395,7 +395,7 @@ impl Vdp {
                         let draw_x = x_origin
                             + (tc * if magnified { 16 } else { 8 }) as i32
                             + (bit * pixel_count + m) as i32;
-                        if draw_x < 0 || draw_x >= 256 { continue; }
+                        if !(0..256_i32).contains(&draw_x) { continue; }
                         let dx = draw_x as usize;
                         if occupied[dx] {
                             self.sprite_collision = true;
@@ -578,8 +578,8 @@ impl Vdp {
                     let plane3 = self.vram[tile_addr + line_in_tile * 4 + 3];
                     
                     for x in 0..8 {
-                        let draw_x = x_pos + x as i32;
-                        if draw_x >= 0 && draw_x < 256 {
+                        let draw_x = x_pos + x;
+                        if (0..256_i32).contains(&draw_x) {
                             let draw_x_u = draw_x as usize;
                             let bit_offset = 7 - x; 
                             let mask = 1 << bit_offset;
@@ -650,7 +650,7 @@ impl Vdp {
             VdpMode::CramWrite => {
                 let addr = (self.address_register & 0x3F) as usize;
                 if self.platform.is_gg() {
-                    if addr % 2 == 0 {
+                    if addr.is_multiple_of(2) {
                         self.cram_latch = value;
                     } else {
                         self.cram[addr - 1] = self.cram_latch;
@@ -732,5 +732,347 @@ impl Vdp {
                 _ => unreachable!()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Platform;
+
+    fn make_vdp() -> Vdp { Vdp::new(Platform::MasterSystem) }
+    fn make_gg_vdp() -> Vdp { Vdp::new(Platform::GameGear) }
+
+    // ── tms_mode ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tms_mode_4_when_m4_bit_set() {
+        let mut v = make_vdp();
+        v.registers[0] = 0x04; // bit 2 = M4
+        assert_eq!(v.tms_mode(), 4);
+    }
+
+    #[test]
+    fn tms_mode_0_graphics_i_default() {
+        let v = make_vdp();
+        assert_eq!(v.tms_mode(), 0);
+    }
+
+    #[test]
+    fn tms_mode_1_text() {
+        let mut v = make_vdp();
+        v.registers[1] = 0x10; // M1 bit
+        assert_eq!(v.tms_mode(), 1);
+    }
+
+    #[test]
+    fn tms_mode_2_graphics_ii() {
+        let mut v = make_vdp();
+        v.registers[0] = 0x02; // M2 bit
+        assert_eq!(v.tms_mode(), 2);
+    }
+
+    #[test]
+    fn tms_mode_3_multicolor() {
+        let mut v = make_vdp();
+        v.registers[1] = 0x08; // M3 bit
+        assert_eq!(v.tms_mode(), 3);
+    }
+
+    // ── get_color ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sms_color_white_6bit() {
+        let mut v = make_vdp();
+        v.cram[0] = 0x3F; // bbggrr all max → white
+        assert_eq!(v.get_color(0), 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn sms_color_black_6bit() {
+        let mut v = make_vdp();
+        v.cram[0] = 0x00;
+        assert_eq!(v.get_color(0), 0xFF000000);
+    }
+
+    #[test]
+    fn sms_color_red_only() {
+        let mut v = make_vdp();
+        v.cram[0] = 0x03; // bits 1-0 = red max, rest 0
+        let color = v.get_color(0);
+        let r = (color >> 16) & 0xFF;
+        let g = (color >> 8) & 0xFF;
+        let b = color & 0xFF;
+        assert_eq!(r, 255);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn gg_color_white_12bit() {
+        let mut v = make_gg_vdp();
+        v.cram[0] = 0xFF; // low byte: GGGGRRRR all max
+        v.cram[1] = 0x0F; // high byte: xxxxBBBB all max
+        assert_eq!(v.get_color(0), 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn gg_color_black_12bit() {
+        let mut v = make_gg_vdp();
+        v.cram[0] = 0x00;
+        v.cram[1] = 0x00;
+        assert_eq!(v.get_color(0), 0xFF000000);
+    }
+
+    #[test]
+    fn gg_color_wraps_cram_index_to_32_entries() {
+        let mut v = make_gg_vdp();
+        v.cram[0] = 0xFF;
+        v.cram[1] = 0x0F;
+        // Index 32 should wrap to index 0 (& 0x1F == 0)
+        assert_eq!(v.get_color(0), v.get_color(32));
+    }
+
+    // ── latch_h_v_counters ───────────────────────────────────────────────────
+
+    #[test]
+    fn latch_captures_current_counters() {
+        let mut v = make_vdp();
+        v.h_counter = 0x42;
+        v.v_counter = 0x77;
+        v.latch_h_v_counters();
+        assert_eq!(v.latched_h_counter, 0x42);
+        assert_eq!(v.latched_v_counter, 0x77);
+        assert!(v.h_latched);
+    }
+
+    // ── read_vcounter / read_hcounter ─────────────────────────────────────────
+
+    #[test]
+    fn read_vcounter_returns_v_counter() {
+        let mut v = make_vdp();
+        v.v_counter = 0xC0;
+        assert_eq!(v.read_vcounter(), 0xC0);
+    }
+
+    #[test]
+    fn read_hcounter_returns_live_when_not_latched() {
+        let mut v = make_vdp();
+        v.h_counter = 0x55;
+        v.h_latched = false;
+        assert_eq!(v.read_hcounter(), 0x55);
+    }
+
+    #[test]
+    fn read_hcounter_returns_latched_when_latched() {
+        let mut v = make_vdp();
+        v.h_counter = 0x55;
+        v.latched_h_counter = 0x10;
+        v.h_latched = true;
+        assert_eq!(v.read_hcounter(), 0x10);
+    }
+
+    // ── write_control / read_control ─────────────────────────────────────────
+
+    #[test]
+    fn control_first_byte_sets_latch() {
+        let mut v = make_vdp();
+        v.write_control(0xAB);
+        assert!(v.first_byte_received);
+        assert_eq!(v.control_word & 0xFF, 0xAB);
+    }
+
+    #[test]
+    fn control_second_byte_clears_latch() {
+        let mut v = make_vdp();
+        v.write_control(0x00);
+        v.write_control(0x40); // command = VramWrite
+        assert!(!v.first_byte_received);
+    }
+
+    #[test]
+    fn control_vram_write_mode_sets_address() {
+        let mut v = make_vdp();
+        v.write_control(0x34); // addr low = 0x34
+        v.write_control(0x41); // command 01, addr high = 0x01 → address = 0x0134
+        assert_eq!(v.mode, VdpMode::VramWrite);
+        assert_eq!(v.address_register, 0x0134);
+    }
+
+    #[test]
+    fn control_vram_read_mode_prefetches_buffer() {
+        let mut v = make_vdp();
+        v.vram[0x10] = 0x99;
+        v.write_control(0x10); // addr = 0x0010, command 00 = VramRead
+        v.write_control(0x00);
+        assert_eq!(v.read_buffer, 0x99);
+        assert_eq!(v.address_register, 0x0011); // auto-incremented after prefetch
+    }
+
+    #[test]
+    fn control_register_write_updates_register() {
+        let mut v = make_vdp();
+        v.write_control(0xAA); // data = 0xAA
+        v.write_control(0x80 | (3 << 4) | 0x02); // command 10, register index=3... wait
+        // command bits[7:6] = 0b10 when byte >> 6 == 2
+        // byte = 0b10_????_?? → 0x8X or 0x9X or 0xAX or 0xBX
+        // byte = 0b1000_0010 = 0x82 → command=2, reg index = 0x82 & 0x0F = 2
+        // Restart cleanly:
+        let mut v = make_vdp();
+        v.write_control(0xBB); // data byte
+        v.write_control(0x82); // command=2 (reg write), reg index=2
+        assert_eq!(v.registers[2], 0xBB);
+    }
+
+    #[test]
+    fn control_cram_write_mode() {
+        let mut v = make_vdp();
+        v.write_control(0x00);
+        v.write_control(0xC0); // command 11 = CramWrite
+        assert_eq!(v.mode, VdpMode::CramWrite);
+    }
+
+    #[test]
+    fn read_control_returns_vblank_bit_and_clears_it() {
+        let mut v = make_vdp();
+        v.vblank_flag = true;
+        let status = v.read_control();
+        assert_eq!(status & 0x80, 0x80);
+        assert!(!v.vblank_flag); // cleared after read
+    }
+
+    #[test]
+    fn read_control_returns_sprite_overflow_bit_and_clears_it() {
+        let mut v = make_vdp();
+        v.sprite_overflow = true;
+        let status = v.read_control();
+        assert_eq!(status & 0x40, 0x40);
+        assert!(!v.sprite_overflow);
+    }
+
+    #[test]
+    fn read_control_returns_sprite_collision_bit_and_clears_it() {
+        let mut v = make_vdp();
+        v.sprite_collision = true;
+        let status = v.read_control();
+        assert_eq!(status & 0x20, 0x20);
+        assert!(!v.sprite_collision);
+    }
+
+    #[test]
+    fn read_control_clears_line_interrupt_flag() {
+        let mut v = make_vdp();
+        v.line_interrupt_flag = true;
+        v.read_control();
+        assert!(!v.line_interrupt_flag);
+    }
+
+    #[test]
+    fn read_control_clears_first_byte_latch() {
+        let mut v = make_vdp();
+        v.write_control(0x00); // first byte
+        assert!(v.first_byte_received);
+        v.read_control();
+        assert!(!v.first_byte_received);
+    }
+
+    // ── write_data / read_data ────────────────────────────────────────────────
+
+    #[test]
+    fn write_data_vram_mode_stores_byte_and_increments() {
+        let mut v = make_vdp();
+        v.write_control(0x00);
+        v.write_control(0x40); // VramWrite, addr=0
+        v.write_data(0x42);
+        assert_eq!(v.vram[0], 0x42);
+        assert_eq!(v.address_register, 1);
+    }
+
+    #[test]
+    fn write_data_auto_increments_address() {
+        let mut v = make_vdp();
+        v.write_control(0x00);
+        v.write_control(0x40); // VramWrite, addr=0
+        v.write_data(0x11);
+        v.write_data(0x22);
+        v.write_data(0x33);
+        assert_eq!(v.vram[0], 0x11);
+        assert_eq!(v.vram[1], 0x22);
+        assert_eq!(v.vram[2], 0x33);
+        assert_eq!(v.address_register, 3);
+    }
+
+    #[test]
+    fn read_data_returns_buffer_and_loads_next() {
+        let mut v = make_vdp();
+        v.vram[0x00] = 0x11;
+        v.vram[0x01] = 0x22;
+        // VramRead at addr 0 — prefetches vram[0] into buffer, addr becomes 1
+        v.write_control(0x00);
+        v.write_control(0x00); // command 00 = VramRead
+        assert_eq!(v.read_buffer, 0x11);
+        // read_data returns old buffer and loads vram[1]
+        let val = v.read_data();
+        assert_eq!(val, 0x11);
+        assert_eq!(v.read_buffer, 0x22);
+    }
+
+    #[test]
+    fn write_data_clears_first_byte_latch() {
+        let mut v = make_vdp();
+        v.write_control(0x00); // first byte
+        assert!(v.first_byte_received);
+        v.write_data(0xFF); // any data write resets latch
+        assert!(!v.first_byte_received);
+    }
+
+    #[test]
+    fn sms_cram_write_stores_color() {
+        let mut v = make_vdp();
+        v.write_control(0x00);
+        v.write_control(0xC0); // CramWrite, addr=0
+        v.write_data(0x3F); // full SMS white
+        assert_eq!(v.cram[0], 0x3F);
+    }
+
+    #[test]
+    fn gg_cram_write_latches_low_byte_then_stores_pair() {
+        let mut v = make_gg_vdp();
+        v.write_control(0x00);
+        v.write_control(0xC0); // CramWrite, addr=0 (even)
+        v.write_data(0xAB); // low byte → latched
+        assert_eq!(v.cram_latch, 0xAB);
+        v.write_data(0x0F); // high byte → both stored
+        assert_eq!(v.cram[0], 0xAB);
+        assert_eq!(v.cram[1], 0x0F);
+    }
+
+    // ── get_state / load_state roundtrip ─────────────────────────────────────
+
+    #[test]
+    fn get_and_load_state_roundtrip() {
+        let mut v = make_vdp();
+        v.vram[100] = 0xDE;
+        v.cram[5] = 0x1A;
+        v.registers[7] = 0x0F;
+        v.v_counter = 0xC0;
+        v.h_counter = 0x55;
+        v.vblank_flag = true;
+        v.latch_h_v_counters();
+
+        let state = v.get_state();
+
+        let mut v2 = make_vdp();
+        v2.load_state(&state);
+
+        assert_eq!(v2.vram[100], 0xDE);
+        assert_eq!(v2.cram[5], 0x1A);
+        assert_eq!(v2.registers[7], 0x0F);
+        assert_eq!(v2.v_counter, 0xC0);
+        assert_eq!(v2.h_counter, 0x55);
+        assert!(v2.vblank_flag);
+        assert!(v2.h_latched);
+        assert_eq!(v2.latched_h_counter, 0x55);
+        assert_eq!(v2.latched_v_counter, 0xC0);
     }
 }

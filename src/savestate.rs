@@ -273,3 +273,189 @@ impl SaveState {
         Some(SaveState { cpu, mmu, vdp, psg, timing })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_state() -> SaveState {
+        SaveState {
+            cpu: CpuState {
+                af: 0x1234, bc: 0x5678, de: 0x9ABC, hl: 0xDEF0,
+                af_alt: 0xAAAA, bc_alt: 0xBBBB, de_alt: 0xCCCC, hl_alt: 0xDDDD,
+                pc: 0x0100, sp: 0xFFFE, ix: 0x1111, iy: 0x2222, mem_ptr: 0x3333,
+                i: 0x42, r: 0x55,
+                iff1: true, iff2: false, halted: false,
+                interrupt_mode: 1, iff_delay: 0,
+                irq_pending: 0, nmi_pending: 0, irq_data: 0xFF,
+            },
+            mmu: MmuState {
+                ram: [0xAB; 8192],
+                cart_ram: [0xCD; 16384],
+                ram_control: 0x08,
+                rom_bank_0: 0, rom_bank_1: 1, rom_bank_2: 2,
+            },
+            vdp: VdpState {
+                vram: {
+                    let mut v = [0u8; 16384];
+                    v[0] = 0xDE; v[16383] = 0xAD;
+                    v
+                },
+                cram: [0x3F; 64],
+                registers: [0xAA; 16],
+                control_word: 0x4001,
+                first_byte_received: true,
+                mode: 1,
+                address_register: 0x1234,
+                read_buffer: 0x77,
+                vblank_flag: true,
+                line_interrupt_flag: false,
+                sprite_collision: true,
+                sprite_overflow: false,
+                v_counter: 0xC0,
+                h_counter: 0x55,
+                h_latched: true,
+                latched_h_counter: 0x42,
+                latched_v_counter: 0xBB,
+                cram_latch: 0x0F,
+            },
+            psg: PsgState {
+                registers: [100, 200, 300, 400, 0, 1, 2, 3],
+                latch: 0x90,
+                counters: [10, 20, 30, 40],
+                polarity: [1, -1, 1, -1],
+                noise_lfsr: 0x8000,
+                clock_frac: std::f64::consts::PI,
+                stereo: 0xFF,
+            },
+            timing: EmuTimingState {
+                vcounter: 192,
+                cycles_accumulator: -10,
+                line_interrupt_counter: 7,
+                frame_cycles: 59736,
+            },
+        }
+    }
+
+    #[test]
+    fn roundtrip_preserves_cpu_fields() {
+        let state = sample_state();
+        let bytes = state.serialize();
+        let r = SaveState::deserialize(&bytes).unwrap();
+        assert_eq!(r.cpu.af, 0x1234);
+        assert_eq!(r.cpu.bc, 0x5678);
+        assert_eq!(r.cpu.de, 0x9ABC);
+        assert_eq!(r.cpu.hl, 0xDEF0);
+        assert_eq!(r.cpu.pc, 0x0100);
+        assert_eq!(r.cpu.sp, 0xFFFE);
+        assert_eq!(r.cpu.ix, 0x1111);
+        assert_eq!(r.cpu.iy, 0x2222);
+        assert_eq!(r.cpu.i, 0x42);
+        assert_eq!(r.cpu.r, 0x55);
+        assert!(r.cpu.iff1);
+        assert!(!r.cpu.iff2);
+        assert!(!r.cpu.halted);
+        assert_eq!(r.cpu.interrupt_mode, 1);
+        assert_eq!(r.cpu.irq_data, 0xFF);
+    }
+
+    #[test]
+    fn roundtrip_preserves_mmu_fields() {
+        let state = sample_state();
+        let bytes = state.serialize();
+        let r = SaveState::deserialize(&bytes).unwrap();
+        assert_eq!(r.mmu.ram[0], 0xAB);
+        assert_eq!(r.mmu.ram[8191], 0xAB);
+        assert_eq!(r.mmu.cart_ram[0], 0xCD);
+        assert_eq!(r.mmu.cart_ram[16383], 0xCD);
+        assert_eq!(r.mmu.ram_control, 0x08);
+        assert_eq!(r.mmu.rom_bank_0, 0);
+        assert_eq!(r.mmu.rom_bank_1, 1);
+        assert_eq!(r.mmu.rom_bank_2, 2);
+    }
+
+    #[test]
+    fn roundtrip_preserves_vdp_fields() {
+        let state = sample_state();
+        let bytes = state.serialize();
+        let r = SaveState::deserialize(&bytes).unwrap();
+        assert_eq!(r.vdp.vram[0], 0xDE);
+        assert_eq!(r.vdp.vram[16383], 0xAD);
+        assert_eq!(r.vdp.cram[0], 0x3F);
+        assert_eq!(r.vdp.control_word, 0x4001);
+        assert!(r.vdp.first_byte_received);
+        assert_eq!(r.vdp.mode, 1);
+        assert_eq!(r.vdp.address_register, 0x1234);
+        assert_eq!(r.vdp.read_buffer, 0x77);
+        assert!(r.vdp.vblank_flag);
+        assert!(!r.vdp.line_interrupt_flag);
+        assert!(r.vdp.sprite_collision);
+        assert!(!r.vdp.sprite_overflow);
+        assert_eq!(r.vdp.v_counter, 0xC0);
+        assert_eq!(r.vdp.h_counter, 0x55);
+        assert!(r.vdp.h_latched);
+        assert_eq!(r.vdp.latched_h_counter, 0x42);
+        assert_eq!(r.vdp.latched_v_counter, 0xBB);
+        assert_eq!(r.vdp.cram_latch, 0x0F);
+    }
+
+    #[test]
+    fn roundtrip_preserves_psg_fields() {
+        let state = sample_state();
+        let bytes = state.serialize();
+        let r = SaveState::deserialize(&bytes).unwrap();
+        assert_eq!(r.psg.registers[0], 100);
+        assert_eq!(r.psg.registers[7], 3);
+        assert_eq!(r.psg.latch, 0x90);
+        assert_eq!(r.psg.counters[0], 10);
+        assert_eq!(r.psg.counters[3], 40);
+        assert_eq!(r.psg.polarity[0], 1);
+        assert_eq!(r.psg.polarity[1], -1);
+        assert_eq!(r.psg.noise_lfsr, 0x8000);
+        assert!((r.psg.clock_frac - std::f64::consts::PI).abs() < 1e-15);
+        assert_eq!(r.psg.stereo, 0xFF);
+    }
+
+    #[test]
+    fn roundtrip_preserves_timing_fields() {
+        let state = sample_state();
+        let bytes = state.serialize();
+        let r = SaveState::deserialize(&bytes).unwrap();
+        assert_eq!(r.timing.vcounter, 192);
+        assert_eq!(r.timing.cycles_accumulator, -10);
+        assert_eq!(r.timing.line_interrupt_counter, 7);
+        assert_eq!(r.timing.frame_cycles, 59736);
+    }
+
+    #[test]
+    fn serialized_bytes_start_with_magic_and_version() {
+        let bytes = sample_state().serialize();
+        assert_eq!(&bytes[0..4], b"VSMS");
+        assert_eq!(bytes[4], VERSION);
+    }
+
+    #[test]
+    fn deserialize_bad_magic_returns_none() {
+        let mut bytes = sample_state().serialize();
+        bytes[0] = b'X';
+        assert!(SaveState::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn deserialize_bad_version_returns_none() {
+        let mut bytes = sample_state().serialize();
+        bytes[4] = 99;
+        assert!(SaveState::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn deserialize_truncated_returns_none() {
+        let bytes = sample_state().serialize();
+        assert!(SaveState::deserialize(&bytes[..5]).is_none());
+    }
+
+    #[test]
+    fn deserialize_empty_returns_none() {
+        assert!(SaveState::deserialize(&[]).is_none());
+    }
+}
