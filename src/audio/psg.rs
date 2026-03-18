@@ -96,7 +96,7 @@ impl Psg {
             let data = (value & 0x0F) as u16;
 
             let reg_index = self.latch as usize;
-            if reg_index % 2 == 0 {
+            if reg_index.is_multiple_of(2) {
                 // Tone register (lower 4 bits)
                 self.registers[reg_index] = (self.registers[reg_index] & 0x3F0) | data;
             } else {
@@ -108,7 +108,7 @@ impl Psg {
             let data = (value & 0x3F) as u16;
             let reg_index = self.latch as usize;
 
-            if reg_index % 2 == 0 {
+            if reg_index.is_multiple_of(2) {
                 // Tone register (upper 6 bits)
                 self.registers[reg_index] = (data << 4) | (self.registers[reg_index] & 0x0F);
             } else {

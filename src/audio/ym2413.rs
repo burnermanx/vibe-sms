@@ -1,6 +1,4 @@
-/// YM2413 (OPLL) Pure Rust implementation
-/// Adapted from Mitsutaka Okazaki's emu2413
-
+/// YM2413 (OPLL) Pure Rust implementation — adapted from Mitsutaka Okazaki's emu2413
 const DP_BITS: u32 = 19;
 const PG_BITS: u32 = 10;
 const PG_WIDTH: u32 = 1 << PG_BITS;
@@ -10,7 +8,7 @@ const LW: usize = 16;
 const SINC_RESO: usize = 256;
 const SINC_AMP_BITS: usize = 12;
 
-const ML_TABLE: [u32; 16] = [1, 1 * 2, 2 * 2, 3 * 2, 4 * 2, 5 * 2, 6 * 2, 7 * 2, 8 * 2, 9 * 2, 10 * 2, 10 * 2, 12 * 2, 12 * 2, 15 * 2, 15 * 2];
+const ML_TABLE: [u32; 16] = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 20, 24, 24, 30, 30];
 
 const OPLL_TONE_NUM: usize = 3;
 const DEFAULT_INST: [[[u8; 8]; 19]; OPLL_TONE_NUM] = [
@@ -195,8 +193,9 @@ struct Patch {
     am: u32, pm: u32, ws: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Slot {
+    #[allow(dead_code)]
     number: u8,
     slot_type: u8,
     patch: Patch,
@@ -222,34 +221,6 @@ struct Slot {
     eg_shift: u32,
     eg_out: u32,
     update_requests: u32,
-}
-
-impl Default for Slot {
-    fn default() -> Self {
-        Self {
-            number: 0,
-            slot_type: 0,
-            patch: Patch::default(),
-            output: [0; 2],
-            pg_phase: 0,
-            pg_out: 0,
-            pg_keep: 0,
-            blk_fnum: 0,
-            fnum: 0,
-            blk: 0,
-            eg_state: 0, // 0 = SETTLE, 1 = ATTACK, 2 = DECAY, 3 = SINK, etc.
-            volume: 0,
-            key_flag: 0,
-            sus_flag: 0,
-            tll: 0,
-            rks: 0,
-            eg_rate_h: 0,
-            eg_rate_l: 0,
-            eg_shift: 0,
-            eg_out: 0,
-            update_requests: 0,
-        }
-    }
 }
 
 pub struct RateConv {
@@ -376,11 +347,10 @@ impl Ym2413 {
             noise: 1,
             short_noise: 0,
             patch_number: [0; 9],
-            slot: core::array::from_fn(|i| {
-                let mut s = Slot::default();
-                s.number = i as u8;
-                s.slot_type = (i % 2) as u8;
-                s
+            slot: core::array::from_fn(|i| Slot {
+                number: i as u8,
+                slot_type: (i % 2) as u8,
+                ..Slot::default()
             }),
             patch: core::array::from_fn(|_| Patch::default()),
             ch_out: [0; 14],
@@ -441,7 +411,7 @@ impl Ym2413 {
     }
 
     fn make_tll_table(&mut self) {
-        for fnum in 0..16 {
+        for (fnum, &kl_base) in KL_TABLE.iter().enumerate() {
             for block in 0..8 {
                 for tl in 0..64 {
                     for kl in 0..4 {
@@ -449,7 +419,7 @@ impl Ym2413 {
                         if kl == 0 {
                             self.tll_table[idx][tl][kl] = (tl as u32) << 1;
                         } else {
-                            let tmp = KL_TABLE[fnum] - (3.0 * (7 - block) as f64) * 2.0;
+                            let tmp = kl_base - (3.0 * (7 - block) as f64) * 2.0;
                             if tmp <= 0.0 {
                                 self.tll_table[idx][tl][kl] = (tl as u32) << 1;
                             } else {
@@ -475,9 +445,7 @@ impl Ym2413 {
     }
 
     fn make_sin_table(&mut self) {
-        for i in 0..256 {
-            self.fullsin_table[i] = FULLSIN_TABLE_RAW[i];
-        }
+        self.fullsin_table[..256].copy_from_slice(&FULLSIN_TABLE_RAW);
         for x in 0..(PG_WIDTH / 4) as usize {
             self.fullsin_table[((PG_WIDTH / 4) as usize) + x] = self.fullsin_table[((PG_WIDTH / 4) as usize) - x - 1];
         }
@@ -495,11 +463,9 @@ impl Ym2413 {
     fn apply_default_patches(&mut self) {
         // We will default to the standard OPLL (YM2413) tones in DEFAULT_INST[0].
         // 19 instruments total. (User is 0, Melodic is 1-15, Rhythm is 16-18)
-        for i in 0..19 {
-            let data = DEFAULT_INST[0][i];
-            
+        for (i, data) in DEFAULT_INST[0].iter().enumerate() {
             // Modulator Patch
-            let pt_mod = &mut self.patch[i * 2 + 0];
+            let pt_mod = &mut self.patch[i * 2];
             pt_mod.am = ((data[0] >> 7) & 1) as u32;
             pt_mod.pm = ((data[0] >> 6) & 1) as u32;
             pt_mod.eg = ((data[0] >> 5) & 1) as u32;
@@ -600,21 +566,17 @@ impl Ym2413 {
                     slot.eg_out = 0.max(slot.eg_out as i32 - (slot.eg_out >> s) as i32 - 1) as u32;
                 }
             }
-        } else {
-            if slot.eg_rate_h > 0 && (eg_counter & mask) == 0 {
-                let step = Self::lookup_decay_step(slot, eg_counter);
-                slot.eg_out = EG_MUTE.min(slot.eg_out + step as u32);
-            }
+        } else if slot.eg_rate_h > 0 && (eg_counter & mask) == 0 {
+            let step = Self::lookup_decay_step(slot, eg_counter);
+            slot.eg_out = EG_MUTE.min(slot.eg_out + step as u32);
         }
 
         match slot.eg_state {
             EG_DAMP => {
                 if slot.eg_out >= EG_MAX && (eg_counter & mask) == 0 {
                     Self::start_envelope(slot);
-                    if (slot.slot_type & 1) != 0 {
-                        if slot.pg_keep == 0 {
-                            slot.pg_phase = 0;
-                        }
+                    if (slot.slot_type & 1) != 0 && slot.pg_keep == 0 {
+                        slot.pg_phase = 0;
                         // Buddy reset happens below outside borrow
                     }
                 }
@@ -664,7 +626,7 @@ impl Ym2413 {
         }
 
         let mut freq = (slot.fnum & 0x1ff) as i32 * 2 + pm;
-        freq = freq * ML_TABLE[slot.patch.ml as usize] as i32;
+        freq *= ML_TABLE[slot.patch.ml as usize] as i32;
         let shift = slot.blk;
         let inc = (freq << shift) >> 2;
 
@@ -830,9 +792,7 @@ impl Ym2413 {
         let wave_table = if slot.patch.ws != 0 { &self.halfsin_table } else { &self.fullsin_table };
         let phase = if (slot.pg_out & (1 << (PG_BITS - 2))) != 0 {
             if (self.noise & 1) != 0 { 0x300 } else { 0x200 }
-        } else {
-            if (self.noise & 1) != 0 { 0x0 } else { 0x100 }
-        };
+        } else if (self.noise & 1) != 0 { 0x0 } else { 0x100 };
         let h = wave_table[phase];
         if slot.eg_out >= EG_MAX { return 0; }
         let att = EG_MUTE.min(slot.eg_out + slot.tll as u32) << 4;
@@ -854,9 +814,7 @@ impl Ym2413 {
         let wave_table = if slot.patch.ws != 0 { &self.halfsin_table } else { &self.fullsin_table };
         let phase = if self.short_noise != 0 {
             if (self.noise & 1) != 0 { 0x2d0 } else { 0x234 }
-        } else {
-            if (self.noise & 1) != 0 { 0x34 } else { 0xd0 }
-        };
+        } else if (self.noise & 1) != 0 { 0x34 } else { 0xd0 };
         let h = wave_table[phase];
         if slot.eg_out >= EG_MAX { return 0; }
         let att = EG_MUTE.min(slot.eg_out + slot.tll as u32) << 4;
@@ -928,13 +886,12 @@ impl Ym2413 {
     
     fn update_reg(&mut self) {
         let mut addr = self.adr as usize;
-        let data;
 
         // Register mirroring (C reference: 0x19-0x1F -> 0x10-0x16, etc.)
         if (0x19..=0x1f).contains(&addr) || (0x29..=0x2f).contains(&addr) || (0x39..=0x3f).contains(&addr) {
             addr -= 9;
         }
-        data = self.reg[addr];
+        let data = self.reg[addr];
 
         match addr {
             0x00 => { // Modulator AM/PM/EG/KR/ML

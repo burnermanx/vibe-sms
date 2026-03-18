@@ -49,10 +49,10 @@ impl Emulator {
                 cycles_run = 4; // NOP (Halt state)
             }
             
-            frame_cycles += cycles_run as u32;
+            frame_cycles += cycles_run;
             self.cycles_accumulator += cycles_run as i32;
-            
-            sample_cycles_accumulator += cycles_run as u32;
+
+            sample_cycles_accumulator += cycles_run;
             while sample_cycles_accumulator >= cycles_per_sample {
                 sample_cycles_accumulator -= cycles_per_sample;
                 let (sample_l, sample_r) = self.cpu.io.bus.borrow_mut().mixer.generate_sample();
@@ -116,7 +116,7 @@ impl Emulator {
                     let my = self.cpu.io.bus.borrow().joypad.mouse_y;
                     
                     // We check the exact row we just rendered!
-                    if self.vcounter as u16 == my {
+                    if self.vcounter == my {
                         let mx = self.cpu.io.bus.borrow().joypad.mouse_x;
                         
                         let pixel = self.cpu.io.bus.borrow().vdp.frame_buffer[(my as usize) * 256 + (mx as usize)];
@@ -126,17 +126,13 @@ impl Emulator {
                         
                         // Average brightness threshold (pure white flash is 765)
                         if (r + g + b) >= 750 {
-                            if self.cpu.io.bus.borrow().joypad.lightgun_active {
-                                println!("LIGHT GUN HIT DETECTED! mx: {}, my: {}, color: {}", mx, my, r+g+b);
-                            }
-                            
-                            let phaser_h_counter = 16 + (mx >> 1);
+                                let phaser_h_counter = 16 + (mx >> 1);
                             
                             self.cpu.io.bus.borrow_mut().vdp.h_counter = phaser_h_counter as u8;
                             self.cpu.io.bus.borrow_mut().vdp.latch_h_v_counters();
                             self.cpu.io.bus.borrow_mut().joypad.th_pin_low = true; // Stay low until CPU reads it or Vblank!
                         }
-                    } else if self.vcounter as u16 > my + 8 || self.vcounter < my {
+                    } else if self.vcounter > my + 8 || self.vcounter < my {
                         // Automatically release the TH switch right after 8 scanlines (creating a realistic physical sensor pulse).
                         self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
                     }
@@ -168,7 +164,7 @@ impl Emulator {
     }
 
     pub fn get_framebuffer(&self) -> [u32; 256 * 192] {
-        let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer.clone();
+        let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer;
         // Strip the internal priority encoding bit before output
         for pixel in fb.iter_mut() {
             *pixel = (*pixel & 0x00FFFFFF) | 0xFF000000;
@@ -177,6 +173,7 @@ impl Emulator {
     }
 
     // Proxy commands to joypad
+    #[allow(clippy::too_many_arguments)]
     pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
         let mut bus = self.cpu.io.bus.borrow_mut();
         // Detect rising edge of Start/Pause button

@@ -395,7 +395,7 @@ impl Vdp {
                         let draw_x = x_origin
                             + (tc * if magnified { 16 } else { 8 }) as i32
                             + (bit * pixel_count + m) as i32;
-                        if draw_x < 0 || draw_x >= 256 { continue; }
+                        if !(0..256_i32).contains(&draw_x) { continue; }
                         let dx = draw_x as usize;
                         if occupied[dx] {
                             self.sprite_collision = true;
@@ -578,8 +578,8 @@ impl Vdp {
                     let plane3 = self.vram[tile_addr + line_in_tile * 4 + 3];
                     
                     for x in 0..8 {
-                        let draw_x = x_pos + x as i32;
-                        if draw_x >= 0 && draw_x < 256 {
+                        let draw_x = x_pos + x;
+                        if (0..256_i32).contains(&draw_x) {
                             let draw_x_u = draw_x as usize;
                             let bit_offset = 7 - x; 
                             let mask = 1 << bit_offset;
@@ -650,7 +650,7 @@ impl Vdp {
             VdpMode::CramWrite => {
                 let addr = (self.address_register & 0x3F) as usize;
                 if self.platform.is_gg() {
-                    if addr % 2 == 0 {
+                    if addr.is_multiple_of(2) {
                         self.cram_latch = value;
                     } else {
                         self.cram[addr - 1] = self.cram_latch;

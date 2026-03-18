@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version};
@@ -36,10 +36,10 @@ const GG_W:  usize = 160;
 const GG_H:  usize = 144;
 const SMS_FRAME_US: i64 = 16_683;
 
-fn sram_path(p: &PathBuf) -> PathBuf { p.with_extension("sav") }
-fn eeprom_path(p: &PathBuf) -> PathBuf { p.with_extension("eep") }
+fn sram_path(p: &Path) -> PathBuf { p.with_extension("sav") }
+fn eeprom_path(p: &Path) -> PathBuf { p.with_extension("eep") }
 
-fn save_sram(emu: &Emulator, rom_path: &PathBuf) {
+fn save_sram(emu: &Emulator, rom_path: &Path) {
     let data = emu.get_cart_ram();
     match std::fs::write(sram_path(rom_path), &data) {
         Ok(_) => { emu.clear_sram_dirty(); }
@@ -47,13 +47,13 @@ fn save_sram(emu: &Emulator, rom_path: &PathBuf) {
     }
 }
 
-fn load_sram_into(emu: &Emulator, rom_path: &PathBuf) {
+fn load_sram_into(emu: &Emulator, rom_path: &Path) {
     if let Ok(data) = std::fs::read(sram_path(rom_path)) {
         emu.load_cart_ram(&data);
     }
 }
 
-fn save_eeprom(emu: &Emulator, rom_path: &PathBuf) {
+fn save_eeprom(emu: &Emulator, rom_path: &Path) {
     if let Some(data) = emu.get_eeprom_data() {
         match std::fs::write(eeprom_path(rom_path), &data) {
             Ok(_) => { emu.clear_eeprom_dirty(); }
@@ -62,27 +62,27 @@ fn save_eeprom(emu: &Emulator, rom_path: &PathBuf) {
     }
 }
 
-fn load_eeprom_into(emu: &Emulator, rom_path: &PathBuf) {
+fn load_eeprom_into(emu: &Emulator, rom_path: &Path) {
     if !emu.has_eeprom() { return; }
     if let Ok(data) = std::fs::read(eeprom_path(rom_path)) {
         emu.load_eeprom_data(&data);
     }
 }
 
-fn savestate_path(rom_path: &PathBuf, slot: usize) -> PathBuf {
+fn savestate_path(rom_path: &Path, slot: usize) -> PathBuf {
     let stem = rom_path.file_stem().and_then(|s| s.to_str()).unwrap_or("game");
     let ext  = rom_path.extension().and_then(|s| s.to_str()).unwrap_or("sms");
     rom_path.with_file_name(format!("{}.{}.ss{}", stem, ext, slot))
 }
 
-fn save_state_to_slot(emu: &Emulator, rom_path: &PathBuf, slot: usize) {
+fn save_state_to_slot(emu: &Emulator, rom_path: &Path, slot: usize) {
     let bytes = emu.save_state().serialize();
     if let Err(e) = std::fs::write(savestate_path(rom_path, slot), &bytes) {
         eprintln!("Failed to write save state: {e}");
     }
 }
 
-fn load_state_from_slot(emu: &mut Emulator, rom_path: &PathBuf, slot: usize) {
+fn load_state_from_slot(emu: &mut Emulator, rom_path: &Path, slot: usize) {
     let path = savestate_path(rom_path, slot);
     match std::fs::read(&path) {
         Ok(data) => match crate::savestate::SaveState::deserialize(&data) {

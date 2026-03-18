@@ -19,29 +19,30 @@ impl Bus {
         }
     }
 
-    // Acesso à memória usando o barramento
+    /// Read a byte from the memory bus.
     pub fn read(&mut self, addr: u16) -> u8 {
         self.mmu.read(addr)
     }
 
+    /// Write a byte to the memory bus.
     pub fn write(&mut self, addr: u16, value: u8) {
         self.mmu.write(addr, value);
     }
 
-    // Leitura das portas de I/O ($00 - $FF)
+    /// Read from an I/O port ($00–$FF).
     pub fn read_io(&mut self, port: u8) -> u8 {
         match port {
-            // Portas do VDP: 0x80 a 0xBF
+            // VDP data/control ports: 0x80–0xBF
             0x80..=0xBF => {
-                if port % 2 == 0 {
+                if port.is_multiple_of(2) {
                     self.vdp.read_data()
                 } else {
                     self.vdp.read_control()
                 }
             },
-            // Contadores do VDP: 0x40 a 0x7F
+            // VDP V/H counters: 0x40–0x7F
             0x40..=0x7F => {
-                if port % 2 == 0 {
+                if port.is_multiple_of(2) {
                     self.vdp.read_vcounter()
                 } else {
                     self.vdp.read_hcounter()
@@ -49,54 +50,52 @@ impl Bus {
             },
             // Game Gear Start button and I/O ports
             0x00 => if self.platform.is_gg() { self.joypad.read_port_00() } else { 0xFF },
-            // FM Audio Detection port ($F0 - $F2) — checked before the 0xC0-0xFF joypad mirror
+            // FM audio detection port ($F0–$F2) — checked before the 0xC0-0xFF joypad mirror
             0xF0..=0xF2 => self.mixer.fm.read_data(port),
-            // I/O ports: 0xC0-0xFF → Joypad (mirrored throughout this range)
+            // Joypad ports: 0xC0–0xFF (mirrored throughout this range)
             // Even ports = Port A ($DC equivalent), Odd ports = Port B ($DD equivalent)
             0xC0..=0xFF => {
-                if port % 2 == 0 {
+                if port.is_multiple_of(2) {
                     self.joypad.read_port_dc()
                 } else {
                     self.joypad.read_port_dd()
                 }
             },
-            // Portas não mapeadas ou padrões
             _ => 0xFF,
         }
     }
 
-    // Escrita nas portas de I/O ($00 - $FF)
+    /// Write to an I/O port ($00–$FF).
     pub fn write_io(&mut self, port: u8, value: u8) {
         match port {
-            // VDP Data e Control Port (espelhados 0x80 a 0xBF)
+            // VDP data/control ports: 0x80–0xBF
             0x80..=0xBF => {
-                if port % 2 == 0 {
+                if port.is_multiple_of(2) {
                     self.vdp.write_data(value)
                 } else {
                     self.vdp.write_control(value)
                 }
             },
-            // Game Gear Stereo Panning (Port 0x06)
+            // Game Gear stereo panning (port 0x06)
             0x06 => {
                 if self.platform.is_gg() {
                     self.mixer.psg.write_stereo(value);
                 }
             },
-            // Audio PSG ($40 a $7F)
+            // PSG audio ports: 0x40–0x7F
             0x40..=0x7F => self.mixer.psg.write_data(value),
-            // Controle de memória do Sistema ($3E e $3F espelhados de 0x00..0x3F)
+            // System memory control ($3E/$3F, mirrored 0x00–0x3F)
             0x00..=0x3F => {
-                if port % 2 == 0 {
-                    // Bit 3 (0x08) = Cartridge RAM enable, etc (Memory Control)
+                if port.is_multiple_of(2) {
+                    // Bit 3 (0x08) = Cartridge RAM enable (Memory Control)
                 } else {
-                    // Nationalization, Port A/B control (I/O Control)
+                    // Nationalization / Port A/B control (I/O Control)
                     self.joypad.write_port_3f(value);
                 }
             },
-            // Audio FM ($F0 - $F2)
+            // FM audio ports: 0xF0–0xF2
             0xF0..=0xF2 => self.mixer.fm.write_data(port, value),
-            // Portas não mapeadas
-            _ => {}, 
+            _ => {},
         }
     }
 }
