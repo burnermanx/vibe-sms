@@ -3518,7 +3518,6 @@ dependencies = [
  "glutin-winit",
  "gtk",
  "image",
- "libc",
  "muda",
  "pollster 0.3.0",
  "rfd",

@@ -28,25 +28,14 @@ fn main() {
     launch_frontend(rom_path);
 }
 
-/// Allocates a console window and redirects stdout/stderr to it.
+/// Allocates a console window for debug output.
 /// Only compiled on Windows; called only when --debug / -d is passed.
+/// AllocConsole sets the Win32 standard handles automatically; Rust's
+/// println! uses GetStdHandle under the hood, so no freopen is needed.
 #[cfg(windows)]
 fn enable_debug_console() {
     extern "system" {
         fn AllocConsole() -> i32;
     }
-    unsafe {
-        AllocConsole();
-        // Redirect the C runtime's stdout/stderr handles to the new console.
-        libc::freopen(
-            b"CONOUT$\0".as_ptr().cast(),
-            b"w\0".as_ptr().cast(),
-            libc::stdout(),
-        );
-        libc::freopen(
-            b"CONOUT$\0".as_ptr().cast(),
-            b"w\0".as_ptr().cast(),
-            libc::stderr(),
-        );
-    }
+    unsafe { AllocConsole(); }
 }

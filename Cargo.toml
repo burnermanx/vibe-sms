@@ -40,8 +40,6 @@ glib = "0.18"
 rfd      = { version = "0.15" }
 pollster = "0.3"
 
-[target.'cfg(windows)'.dependencies]
-libc = "0.2"
 
 [build-dependencies]
 cc = "1.0"
