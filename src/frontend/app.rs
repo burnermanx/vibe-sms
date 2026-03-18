@@ -387,13 +387,19 @@ impl VibeApp {
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
+                    // Use AsyncFileDialog so that on macOS rfd can internally
+                    // dispatch to the main thread via GCD (NSOpenPanel requires it).
+                    // pollster::block_on parks the spawned thread until GCD signals
+                    // completion — the winit main thread keeps running normally.
                     let proxy = self.proxy.clone();
                     std::thread::spawn(move || {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Sega 8-bit ROMs", &["sms", "sg", "sc", "gg", "SMS", "SG", "SC", "GG"])
-                            .pick_file()
-                        {
-                            let _ = proxy.send_event(MenuAction::RomSelected(p));
+                        let handle = pollster::block_on(
+                            rfd::AsyncFileDialog::new()
+                                .add_filter("Sega 8-bit ROMs", &["sms", "sg", "sc", "gg", "SMS", "SG", "SC", "GG"])
+                                .pick_file(),
+                        );
+                        if let Some(h) = handle {
+                            let _ = proxy.send_event(MenuAction::RomSelected(h.path().to_path_buf()));
                         }
                     });
                 }
