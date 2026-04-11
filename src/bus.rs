@@ -1,36 +1,36 @@
 use crate::platform::Platform;
 
-pub struct Bus {
-    pub mmu:    crate::mmu::Mmu,
-    pub vdp:    crate::vdp::Vdp,
-    pub joypad: crate::joypad::Joypad,
-    pub mixer:  crate::audio::mixer::AudioMixer,
-    pub platform: Platform,
+pub(crate) struct Bus {
+    pub(crate) mmu:    crate::mmu::Mmu,
+    pub(crate) vdp:    crate::vdp::Vdp,
+    pub(crate) joypad: crate::joypad::Joypad,
+    pub(crate) mixer:  crate::audio::mixer::AudioMixer,
+    pub(crate) platform: Platform,
 }
 
 impl Bus {
-    pub fn new(rom: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
+    pub(crate) fn new(rom: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
         Self {
             mmu:    crate::mmu::Mmu::new(rom, platform),
             vdp:    crate::vdp::Vdp::new(platform),
-            joypad: crate::joypad::Joypad::new(platform.is_gg()),
+            joypad: crate::joypad::Joypad::new(),
             mixer:  crate::audio::mixer::AudioMixer::new(platform.is_gg(), sample_rate),
             platform,
         }
     }
 
     /// Read a byte from the memory bus.
-    pub fn read(&mut self, addr: u16) -> u8 {
+    pub(crate) fn read(&mut self, addr: u16) -> u8 {
         self.mmu.read(addr)
     }
 
     /// Write a byte to the memory bus.
-    pub fn write(&mut self, addr: u16, value: u8) {
+    pub(crate) fn write(&mut self, addr: u16, value: u8) {
         self.mmu.write(addr, value);
     }
 
     /// Read from an I/O port ($00–$FF).
-    pub fn read_io(&mut self, port: u8) -> u8 {
+    pub(crate) fn read_io(&mut self, port: u8) -> u8 {
         match port {
             // VDP data/control ports: 0x80–0xBF
             0x80..=0xBF => {
@@ -66,7 +66,7 @@ impl Bus {
     }
 
     /// Write to an I/O port ($00–$FF).
-    pub fn write_io(&mut self, port: u8, value: u8) {
+    pub(crate) fn write_io(&mut self, port: u8, value: u8) {
         match port {
             // VDP data/control ports: 0x80–0xBF
             0x80..=0xBF => {
@@ -100,16 +100,14 @@ impl Bus {
     }
 }
 
-pub struct System {
-    pub bus: std::cell::RefCell<Bus>,
-    pub platform: Platform,
+pub(crate) struct System {
+    pub(crate) bus: std::cell::RefCell<Bus>,
 }
 
 impl System {
-    pub fn new(bus: Bus, platform: Platform) -> Self {
+    pub(crate) fn new(bus: Bus) -> Self {
         Self {
             bus: std::cell::RefCell::new(bus),
-            platform,
         }
     }
 }

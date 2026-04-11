@@ -16,6 +16,9 @@ cpal = "0.15.3"
 # Input
 gilrs = "0.11.0"
 
+# Safe type casting
+bytemuck = "1"
+
 # Frontend — cross-platform (Linux/Windows/macOS)
 egui        = "0.33"
 egui-winit  = "0.33"

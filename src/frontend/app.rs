@@ -20,20 +20,14 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use cpal::Stream;
 use gilrs::{Button, Event as GilrsEvent, Gilrs};
-#[cfg(target_os = "linux")]
-use glib;
 
 use crate::core::Emulator;
-use crate::platform::Platform;
+use crate::platform::{Platform, SMS_W, SMS_H, GG_W, GG_H};
 use crate::frontend::egui_ui::{DialogState, EguiState};
 use crate::frontend::input::{KeyConfig, PadState};
 use crate::frontend::menu::{AppMenu, MenuAction};
 use crate::frontend::renderer::Renderer;
 
-const SMS_W: usize = 256;
-const SMS_H: usize = 192;
-const GG_W:  usize = 160;
-const GG_H:  usize = 144;
 const SMS_FRAME_US: i64 = 16_683;
 
 fn sram_path(p: &Path) -> PathBuf { p.with_extension("sav") }
@@ -93,7 +87,7 @@ fn load_state_from_slot(emu: &mut Emulator, rom_path: &Path, slot: usize) {
     }
 }
 
-pub fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
+pub fn load_rom(path: &Path, sample_rate: f32, fm_disabled: bool) -> Option<Emulator> {
     match std::fs::read(path) {
         Ok(data) => {
             let platform = match path.extension()
@@ -105,8 +99,7 @@ pub fn load_rom(path: &PathBuf, sample_rate: f32, fm_disabled: bool) -> Option<E
                 _          => Platform::MasterSystem,
             };
             let emu = Emulator::new(data, platform, sample_rate);
-            emu.cpu.io.bus.borrow_mut().mixer.fm.user_disabled =
-                platform != Platform::MasterSystem || fm_disabled;
+            emu.set_fm_disabled(platform != Platform::MasterSystem || fm_disabled);
             load_sram_into(&emu, path);
             load_eeprom_into(&emu, path);
             println!("Loaded ROM: {} ({:?})",
@@ -124,8 +117,8 @@ struct GlState {
 }
 
 fn init_gl(window: &Window) -> GlState {
-    let display_handle = window.display_handle().unwrap();
-    let window_handle  = window.window_handle().unwrap();
+    let display_handle = window.display_handle().expect("Failed to get display handle");
+    let window_handle  = window.window_handle().expect("Failed to get window handle");
 
     let display = unsafe {
         #[cfg(target_os = "linux")]
@@ -139,23 +132,28 @@ fn init_gl(window: &Window) -> GlState {
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         let pref = glutin::display::DisplayApiPreference::Egl;
 
-        glutin::display::Display::new(display_handle.as_raw(), pref).unwrap()
+        glutin::display::Display::new(display_handle.as_raw(), pref)
+            .expect("Failed to create GL display")
     };
 
     let template = ConfigTemplateBuilder::new().build();
     let config = unsafe {
-        display.find_configs(template).unwrap()
+        display.find_configs(template)
+            .expect("Failed to find GL configs")
             .reduce(|a, b| if a.num_samples() > b.num_samples() { a } else { b })
-            .unwrap()
+            .expect("No GL configs available")
     };
 
     let size = window.inner_size();
     let surf_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
         window_handle.as_raw(),
-        NonZeroU32::new(size.width.max(1)).unwrap(),
-        NonZeroU32::new(size.height.max(1)).unwrap(),
+        NonZeroU32::new(size.width.max(1)).expect("Non-zero width"),
+        NonZeroU32::new(size.height.max(1)).expect("Non-zero height"),
     );
-    let surface = unsafe { display.create_window_surface(&config, &surf_attrs).unwrap() };
+    let surface = unsafe {
+        display.create_window_surface(&config, &surf_attrs)
+            .expect("Failed to create GL surface")
+    };
 
     let ctx_attrs = ContextAttributesBuilder::new()
         .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
@@ -167,9 +165,14 @@ fn init_gl(window: &Window) -> GlState {
     let not_current = unsafe {
         display.create_context(&config, &ctx_attrs)
             .or_else(|_| display.create_context(&config, &ctx_attrs_gles))
-            .unwrap()
+            .expect("Failed to create GL context")
     };
-    let ctx = not_current.make_current(&surface).unwrap();
+    let ctx = not_current.make_current(&surface).expect("Failed to make GL context current");
+
+    // Enable vsync (swap interval = 1) to prevent unbounded buffer
+    // accumulation on Wayland/EGL, which otherwise causes OOM.
+    surface.set_swap_interval(&ctx, glutin::surface::SwapInterval::Wait(NonZeroU32::new(1).unwrap()))
+        .unwrap_or_else(|e| eprintln!("Warning: failed to set vsync: {e}"));
 
     let gl = Arc::new(unsafe {
         glow::Context::from_loader_function_cstr(|s| {
@@ -259,6 +262,13 @@ impl VibeApp {
         }
     }
 
+    fn flush_saves(&self) {
+        if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
+            if e.is_sram_dirty()   { save_sram(e, p); }
+            if e.is_eeprom_dirty() { save_eeprom(e, p); }
+        }
+    }
+
     fn render(&mut self) {
         let window = match self.window.as_ref() { Some(w) => w.clone(), None => return };
         let gl = match self.gl_state.as_ref().map(|s| s.gl.clone()) { Some(g) => g, None => return };
@@ -301,8 +311,7 @@ impl VibeApp {
             if self.trigger_frames > 0 { self.trigger_frames -= 1; }
 
             if let Some(ref mut e) = self.emu {
-                e.cpu.io.bus.borrow_mut().mixer.fm.user_disabled =
-                    is_sg || is_gg || self.dialog.fm_disabled;
+                e.set_fm_disabled(is_sg || is_gg || self.dialog.fm_disabled);
                 e.set_input(ku, kd, kl, kr, kb1 || trigger_active, kb2, kstart);
                 e.set_lightgun(trigger_active, self.mx.min(255), self.my.min(191));
 
@@ -365,10 +374,7 @@ impl VibeApp {
     fn handle_menu_action(&mut self, action: MenuAction, elwt: &ActiveEventLoop) {
         match action {
             MenuAction::OpenRom => {
-                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                    if e.is_sram_dirty()   { save_sram(e, p); }
-                    if e.is_eeprom_dirty() { save_eeprom(e, p); }
-                }
+                self.flush_saves();
                 // GTK is single-threaded: spawn the async dialog on the glib main
                 // context (main thread).  about_to_wait() pumps that context each
                 // frame so the dialog renders without blocking winit.
@@ -412,29 +418,20 @@ impl VibeApp {
                 }
             }
             MenuAction::Reset => {
-                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                    if e.is_sram_dirty()   { save_sram(e, p); }
-                    if e.is_eeprom_dirty() { save_eeprom(e, p); }
-                }
+                self.flush_saves();
                 if let Some(ref p) = self.rom_path.clone() {
                     self.emu = load_rom(p, self.sample_rate, self.dialog.fm_disabled);
                     self.sram_save_timer = 0;
                 }
             }
             MenuAction::Stop => {
-                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                    if e.is_sram_dirty()   { save_sram(e, p); }
-                    if e.is_eeprom_dirty() { save_eeprom(e, p); }
-                }
+                self.flush_saves();
                 self.emu = None;
                 self.rom_path = None;
                 self.fb.iter_mut().for_each(|p| *p = 0);
             }
             MenuAction::Quit => {
-                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                    if e.is_sram_dirty()   { save_sram(e, p); }
-                    if e.is_eeprom_dirty() { save_eeprom(e, p); }
-                }
+                self.flush_saves();
                 self.shutdown_gl();
                 elwt.exit();
             }
@@ -538,10 +535,7 @@ impl ApplicationHandler<MenuAction> for VibeApp {
 
         match &event {
             WindowEvent::CloseRequested => {
-                if let (Some(ref e), Some(ref p)) = (&self.emu, &self.rom_path) {
-                    if e.is_sram_dirty()   { save_sram(e, p); }
-                    if e.is_eeprom_dirty() { save_eeprom(e, p); }
-                }
+                self.flush_saves();
                 self.shutdown_gl();
                 event_loop.exit();
             }
@@ -633,9 +627,15 @@ impl ApplicationHandler<MenuAction> for VibeApp {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         // Pump the glib main context so that async GTK tasks (e.g. file dialog)
-        // make progress between winit frames.
+        // make progress between winit frames.  Limit iterations to avoid a
+        // spin-loop when the compositor floods the context with events.
         #[cfg(target_os = "linux")]
-        while glib::MainContext::default().iteration(false) {}
+        {
+            let mut iters = 0;
+            while iters < 20 && glib::MainContext::default().iteration(false) {
+                iters += 1;
+            }
+        }
 
         if let Some(ref w) = self.window {
             w.request_redraw();

@@ -28,32 +28,32 @@ const TMS_PALETTE: [u32; 16] = [
     0xFFFFFFFF, // 15 White
 ];
 
-pub struct Vdp {
-    pub vram: [u8; 16384],
-    pub cram: [u8; 64],
-    pub registers: [u8; 16],
-    pub frame_buffer: [u32; 256 * 192],
+pub(crate) struct Vdp {
+    pub(crate) vram: [u8; 16384],
+    pub(crate) cram: [u8; 64],
+    pub(crate) registers: [u8; 16],
+    pub(crate) frame_buffer: [u32; 256 * 192],
 
     control_word: u16,
     first_byte_received: bool,
     mode: VdpMode,
     address_register: u16,
     read_buffer: u8,
-    pub vblank_flag: bool,
-    pub line_interrupt_flag: bool,
-    pub sprite_collision: bool,
-    pub sprite_overflow: bool,
-    pub v_counter: u8,
-    pub h_counter: u8,
-    pub h_latched: bool,
-    pub latched_h_counter: u8,
-    pub latched_v_counter: u8,
-    pub platform: Platform,
-    pub cram_latch: u8,
+    pub(crate) vblank_flag: bool,
+    pub(crate) line_interrupt_flag: bool,
+    pub(crate) sprite_collision: bool,
+    pub(crate) sprite_overflow: bool,
+    pub(crate) v_counter: u8,
+    pub(crate) h_counter: u8,
+    pub(crate) h_latched: bool,
+    pub(crate) latched_h_counter: u8,
+    pub(crate) latched_v_counter: u8,
+    pub(crate) platform: Platform,
+    pub(crate) cram_latch: u8,
 }
 
 impl Vdp {
-    pub fn new(platform: Platform) -> Self {
+    pub(crate) fn new(platform: Platform) -> Self {
         Self {
             vram: [0; 16384],
             cram: [0; 64],
@@ -78,7 +78,7 @@ impl Vdp {
         }
     }
 
-    pub fn get_state(&self) -> crate::savestate::VdpState {
+    pub(crate) fn get_state(&self) -> crate::savestate::VdpState {
         crate::savestate::VdpState {
             vram:                self.vram,
             cram:                self.cram,
@@ -105,7 +105,7 @@ impl Vdp {
         }
     }
 
-    pub fn load_state(&mut self, s: &crate::savestate::VdpState) {
+    pub(crate) fn load_state(&mut self, s: &crate::savestate::VdpState) {
         self.vram                = s.vram;
         self.cram                = s.cram;
         self.registers           = s.registers;
@@ -130,7 +130,7 @@ impl Vdp {
         self.cram_latch          = s.cram_latch;
     }
 
-    pub fn latch_h_v_counters(&mut self) {
+    pub(crate) fn latch_h_v_counters(&mut self) {
         // The real hardware always updates the latch when TH drops!
         self.latched_h_counter = self.h_counter;
         self.latched_v_counter = self.v_counter;
@@ -409,7 +409,7 @@ impl Vdp {
         }
     }
 
-    pub fn render_scanline(&mut self, screen_y: usize) {
+    pub(crate) fn render_scanline(&mut self, screen_y: usize) {
         // SG-1000 / SC-3000 use TMS9918A modes (not SMS Mode 4)
         if self.platform.is_sg_family() {
             match self.tms_mode() {
@@ -616,11 +616,11 @@ impl Vdp {
         }
     }
 
-    pub fn read_vcounter(&mut self) -> u8 {
+    pub(crate) fn read_vcounter(&mut self) -> u8 {
         self.v_counter
     }
 
-    pub fn read_hcounter(&mut self) -> u8 {
+    pub(crate) fn read_hcounter(&mut self) -> u8 {
         if self.h_latched {
             self.latched_h_counter
         } else {
@@ -629,7 +629,7 @@ impl Vdp {
     }
     
     // Leitura na porta DATA ($BE)
-    pub fn read_data(&mut self) -> u8 {
+    pub(crate) fn read_data(&mut self) -> u8 {
         self.first_byte_received = false; // Ler dados limpa o latch
         let data = self.read_buffer;
         // Na SMS, a leitura carrega o buffer com a VRAM atual, 
@@ -640,7 +640,7 @@ impl Vdp {
     }
     
     // Escrita na porta DATA ($BE)
-    pub fn write_data(&mut self, value: u8) {
+    pub(crate) fn write_data(&mut self, value: u8) {
         self.first_byte_received = false; // Latch é limpo ao ler ou escrever dados
         match self.mode {
             VdpMode::VramWrite | VdpMode::VramRead => {
@@ -667,7 +667,7 @@ impl Vdp {
     }
     
     // Leitura na porta CONTROL ($BF)
-    pub fn read_control(&mut self) -> u8 {
+    pub(crate) fn read_control(&mut self) -> u8 {
         self.first_byte_received = false; // Limpa o latch
         
         let mut status = 0x00;
@@ -693,7 +693,7 @@ impl Vdp {
     }
     
     // Escrita na porta CONTROL ($BF)
-    pub fn write_control(&mut self, value: u8) {
+    pub(crate) fn write_control(&mut self, value: u8) {
         if !self.first_byte_received {
             // Primeiro byte: lower byte do word
             self.control_word = (self.control_word & 0xFF00) | (value as u16);
