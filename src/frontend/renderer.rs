@@ -1,10 +1,6 @@
 use std::sync::Arc;
 use glow::HasContext;
-
-const SMS_W: usize = 256;
-const SMS_H: usize = 192;
-const GG_W:  usize = 160;
-const GG_H:  usize = 144;
+use crate::platform::{SMS_W, SMS_H, GG_W, GG_H};
 
 const VERT_SRC: &str = r#"#version 330 core
 layout(location = 0) in vec2 a_pos;
@@ -150,7 +146,7 @@ impl Renderer {
             nx1, ny0, u1, v0,   // top-right
             nx0, ny0, u0, v0,   // top-left
         ];
-        let bytes = bytemuck_cast(&verts);
+        let bytes: &[u8] = bytemuck::cast_slice(&verts);
 
         unsafe {
             gl.viewport(0, 0, window_size.0 as i32, window_size.1 as i32);
@@ -180,11 +176,3 @@ impl Renderer {
     }
 }
 
-fn bytemuck_cast(data: &[f32]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(
-            data.as_ptr() as *const u8,
-            std::mem::size_of_val(data),
-        )
-    }
-}

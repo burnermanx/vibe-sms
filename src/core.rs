@@ -2,19 +2,19 @@ use crate::bus::{Bus, System};
 use crate::platform::Platform;
 use z80::Z80;
 
-pub struct Emulator {
-    pub cpu: Z80<System>,
-    pub frame_cycles: u32,
-    pub vcounter: u16,
-    pub cycles_accumulator: i32,
-    pub line_interrupt_counter: u8,
-    pub platform: Platform,
+pub(crate) struct Emulator {
+    pub(crate) cpu: Z80<System>,
+    frame_cycles: u32,
+    vcounter: u16,
+    cycles_accumulator: i32,
+    line_interrupt_counter: u8,
+    pub(crate) platform: Platform,
 }
 
 impl Emulator {
-    pub fn new(rom_data: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
+    pub(crate) fn new(rom_data: Vec<u8>, platform: Platform, sample_rate: f32) -> Self {
         let bus = Bus::new(rom_data, platform, sample_rate);
-        let system = System::new(bus, platform);
+        let system = System::new(bus);
         let mut cpu = Z80::new(system);
         cpu.init();
 
@@ -28,7 +28,7 @@ impl Emulator {
         }
     }
 
-    pub fn step_frame(&mut self) -> (bool, Vec<f32>) {
+    pub(crate) fn step_frame(&mut self) -> (bool, Vec<f32>) {
         let cycles_per_line = 228;
         let lines_per_frame = 262;
         let total_frame_cycles = cycles_per_line * lines_per_frame;
@@ -63,84 +63,73 @@ impl Emulator {
             
             if self.cycles_accumulator >= cycles_per_line as i32 {
                 self.cycles_accumulator -= cycles_per_line as i32;
-                
-                let _vdp_reg_0 = self.cpu.io.bus.borrow().vdp.registers[0];
-                let _vdp_reg_1 = self.cpu.io.bus.borrow().vdp.registers[1];
-                let vdp_reg_10 = self.cpu.io.bus.borrow().vdp.registers[10];
-                
-                if self.vcounter <= 192 {
-                    if self.line_interrupt_counter == 0 {
-                        self.line_interrupt_counter = vdp_reg_10; 
-                        self.cpu.io.bus.borrow_mut().vdp.line_interrupt_flag = true;
-                    } else {
-                        self.line_interrupt_counter -= 1;
-                    }
-                } else {
-                    self.line_interrupt_counter = vdp_reg_10; 
-                }
-                
-                self.vcounter += 1;
-                if self.vcounter >= 262 {
-                    self.vcounter = 0;
-                    self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
-                    self.cpu.io.bus.borrow_mut().vdp.h_latched = false;
-                }
-                
-                let hw_vcounter = if self.vcounter <= 218 {
-                    self.vcounter
-                } else {
-                    self.vcounter - 6
-                };
-                self.cpu.io.bus.borrow_mut().vdp.v_counter = hw_vcounter as u8;
 
-                // Update H counter based on cycle position within the scanline.
-                // The VDP H counter maps pixel positions (0-341) to counter values:
-                //   Pixels 0-293: H counter = pixel / 2 (values 0x00 to 0x93)  
-                //   Pixels 294-341: H counter = (pixel - 294) / 2 + 0xED - 23 (values 0xED down through jump to 0x93)
-                // Since Z80 cycles × 3/2 ≈ pixel position, and we reset cycles_accumulator each line:
-                let cycle_in_line = (self.cycles_accumulator.max(0) as u32).min(227);
-                let pixel_pos = (cycle_in_line * 3) / 2; // 0-341 range
-                let h_counter = if pixel_pos < 0xED {
-                    pixel_pos as u8
-                } else {
-                    // Jump: after 0xED (237) the counter wraps through 0x93-0xFF hblank region
-                    (pixel_pos - 0xED + 0x93) as u8
-                };
-                self.cpu.io.bus.borrow_mut().vdp.h_counter = h_counter;
-                
-                if self.vcounter < 192 {
-                    self.cpu.io.bus.borrow_mut().vdp.render_scanline(self.vcounter as usize);
-                    
-                    // Light Phaser Detection Simulation
-                    // The photodiode is ALWAYS active, independently of the trigger.
-                    let my = self.cpu.io.bus.borrow().joypad.mouse_y;
-                    
-                    // We check the exact row we just rendered!
-                    if self.vcounter == my {
-                        let mx = self.cpu.io.bus.borrow().joypad.mouse_x;
-                        
-                        let pixel = self.cpu.io.bus.borrow().vdp.frame_buffer[(my as usize) * 256 + (mx as usize)];
-                        let r = (pixel >> 16) & 0xFF;
-                        let g = (pixel >> 8) & 0xFF;
-                        let b = pixel & 0xFF;
-                        
-                        // Average brightness threshold (pure white flash is 765)
-                        if (r + g + b) >= 750 {
-                                let phaser_h_counter = 16 + (mx >> 1);
-                            
-                            self.cpu.io.bus.borrow_mut().vdp.h_counter = phaser_h_counter as u8;
-                            self.cpu.io.bus.borrow_mut().vdp.latch_h_v_counters();
-                            self.cpu.io.bus.borrow_mut().joypad.th_pin_low = true; // Stay low until CPU reads it or Vblank!
+                // Line interrupt handling
+                {
+                    let mut bus = self.cpu.io.bus.borrow_mut();
+                    let vdp_reg_10 = bus.vdp.registers[10];
+                    if self.vcounter <= 192 {
+                        if self.line_interrupt_counter == 0 {
+                            self.line_interrupt_counter = vdp_reg_10;
+                            bus.vdp.line_interrupt_flag = true;
+                        } else {
+                            self.line_interrupt_counter -= 1;
                         }
-                    } else if self.vcounter > my + 8 || self.vcounter < my {
-                        // Automatically release the TH switch right after 8 scanlines (creating a realistic physical sensor pulse).
-                        self.cpu.io.bus.borrow_mut().joypad.th_pin_low = false;
+                    } else {
+                        self.line_interrupt_counter = vdp_reg_10;
                     }
                 }
-                
-                if self.vcounter == 192 {
-                    self.cpu.io.bus.borrow_mut().vdp.vblank_flag = true;
-                    frame_ready = true;
+
+                self.vcounter += 1;
+
+                // Counter updates, rendering, light phaser, and vblank
+                {
+                    let mut bus = self.cpu.io.bus.borrow_mut();
+
+                    if self.vcounter >= 262 {
+                        self.vcounter = 0;
+                        bus.joypad.th_pin_low = false;
+                        bus.vdp.h_latched = false;
+                    }
+
+                    let hw_vcounter = if self.vcounter <= 218 {
+                        self.vcounter
+                    } else {
+                        self.vcounter - 6
+                    };
+                    bus.vdp.v_counter = hw_vcounter as u8;
+
+                    // H counter: maps pixel positions (0-341) to counter values.
+                    // Z80 cycles × 3/2 ≈ pixel position.
+                    let cycle_in_line = (self.cycles_accumulator.max(0) as u32).min(227);
+                    let pixel_pos = (cycle_in_line * 3) / 2;
+                    bus.vdp.h_counter = if pixel_pos < 0xED {
+                        pixel_pos as u8
+                    } else {
+                        (pixel_pos - 0xED + 0x93) as u8
+                    };
+
+                    if self.vcounter < 192 {
+                        bus.vdp.render_scanline(self.vcounter as usize);
+
+                        // Light Phaser: spatial proximity detection, gated by trigger.
+                        // Like Genesis Plus GX, no brightness check — the game renders
+                        // detection frames when the trigger is active.
+                        let my = bus.joypad.mouse_y as i32;
+                        let mx = bus.joypad.mouse_x as i32;
+                        let dy = self.vcounter as i32 - my;
+                        if bus.joypad.lightgun_active && dy.abs() <= 5 && !bus.joypad.th_pin_low {
+                            let phaser_h_counter = (20 + (mx >> 1)) as u8;
+                            bus.vdp.h_counter = phaser_h_counter;
+                            bus.vdp.latch_h_v_counters();
+                            bus.joypad.th_pin_low = true;
+                        }
+                    }
+
+                    if self.vcounter == 192 {
+                        bus.vdp.vblank_flag = true;
+                        frame_ready = true;
+                    }
                 }
             } // Fim do if cycles_accumulator
             
@@ -163,7 +152,7 @@ impl Emulator {
         (frame_ready, audio_buffer)
     }
 
-    pub fn get_framebuffer(&self) -> [u32; 256 * 192] {
+    pub(crate) fn get_framebuffer(&self) -> [u32; 256 * 192] {
         let mut fb = self.cpu.io.bus.borrow().vdp.frame_buffer;
         // Strip the internal priority encoding bit before output
         for pixel in fb.iter_mut() {
@@ -174,7 +163,7 @@ impl Emulator {
 
     // Proxy commands to joypad
     #[allow(clippy::too_many_arguments)]
-    pub fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
+    pub(crate) fn set_input(&mut self, up: bool, down: bool, left: bool, right: bool, b1: bool, b2: bool, start: bool) {
         let mut bus = self.cpu.io.bus.borrow_mut();
         // Detect rising edge of Start/Pause button
         // SMS: Pause button triggers NMI
@@ -196,14 +185,18 @@ impl Emulator {
         }
     }
 
-    pub fn set_lightgun(&mut self, active: bool, x: u16, y: u16) {
+    pub(crate) fn set_lightgun(&mut self, active: bool, x: u16, y: u16) {
         let mut bus = self.cpu.io.bus.borrow_mut();
         bus.joypad.lightgun_active = active;
         bus.joypad.mouse_x = x;
         bus.joypad.mouse_y = y;
     }
 
-    pub fn save_state(&self) -> crate::savestate::SaveState {
+    pub(crate) fn set_fm_disabled(&self, disabled: bool) {
+        self.cpu.io.bus.borrow_mut().mixer.fm.user_disabled = disabled;
+    }
+
+    pub(crate) fn save_state(&self) -> crate::savestate::SaveState {
         use crate::savestate::*;
         let bus = self.cpu.io.bus.borrow();
 
@@ -243,7 +236,7 @@ impl Emulator {
         SaveState { cpu, mmu, vdp, psg, timing }
     }
 
-    pub fn load_state(&mut self, state: crate::savestate::SaveState) {
+    pub(crate) fn load_state(&mut self, state: crate::savestate::SaveState) {
         // CPU
         let c = &state.cpu;
         self.cpu.set_af(c.af); self.cpu.set_bc(c.bc);
@@ -279,25 +272,25 @@ impl Emulator {
         self.frame_cycles          = t.frame_cycles;
     }
 
-    pub fn has_eeprom(&self) -> bool {
+    pub(crate) fn has_eeprom(&self) -> bool {
         self.cpu.io.bus.borrow().mmu.eeprom.is_some()
     }
 
-    pub fn is_eeprom_dirty(&self) -> bool {
+    pub(crate) fn is_eeprom_dirty(&self) -> bool {
         self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.dirty).unwrap_or(false)
     }
 
-    pub fn clear_eeprom_dirty(&self) {
+    pub(crate) fn clear_eeprom_dirty(&self) {
         if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
             eeprom.dirty = false;
         }
     }
 
-    pub fn get_eeprom_data(&self) -> Option<Vec<u8>> {
+    pub(crate) fn get_eeprom_data(&self) -> Option<Vec<u8>> {
         self.cpu.io.bus.borrow().mmu.eeprom.as_ref().map(|e| e.data.to_vec())
     }
 
-    pub fn load_eeprom_data(&self, data: &[u8]) {
+    pub(crate) fn load_eeprom_data(&self, data: &[u8]) {
         if let Some(ref mut eeprom) = self.cpu.io.bus.borrow_mut().mmu.eeprom {
             let len = data.len().min(eeprom.data.len());
             eeprom.data[..len].copy_from_slice(&data[..len]);
@@ -305,21 +298,21 @@ impl Emulator {
         }
     }
 
-    pub fn is_sram_dirty(&self) -> bool {
+    pub(crate) fn is_sram_dirty(&self) -> bool {
         self.cpu.io.bus.borrow().mmu.sram_dirty
     }
 
-    pub fn clear_sram_dirty(&self) {
+    pub(crate) fn clear_sram_dirty(&self) {
         self.cpu.io.bus.borrow_mut().mmu.sram_dirty = false;
     }
 
     /// Returns a copy of the 16KB cart RAM.
-    pub fn get_cart_ram(&self) -> Vec<u8> {
+    pub(crate) fn get_cart_ram(&self) -> Vec<u8> {
         self.cpu.io.bus.borrow().mmu.cart_ram.to_vec()
     }
 
     /// Overwrites cart RAM with the given data (used when loading a .sav file).
-    pub fn load_cart_ram(&self, data: &[u8]) {
+    pub(crate) fn load_cart_ram(&self, data: &[u8]) {
         let mut bus = self.cpu.io.bus.borrow_mut();
         let len = data.len().min(bus.mmu.cart_ram.len());
         bus.mmu.cart_ram[..len].copy_from_slice(&data[..len]);
