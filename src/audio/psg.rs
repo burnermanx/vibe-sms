@@ -13,9 +13,9 @@ const PSG_VOLUME_TABLE: [f32; 16] = [
 /// the internal clock. Each channel has a 10-bit counter that decrements
 /// every internal clock tick. When it reaches zero, it reloads from the
 /// register and the output polarity toggles.
-pub struct Psg {
+pub(crate) struct Psg {
     // 4 pairs: [tone0, vol0, tone1, vol1, tone2, vol2, noise_ctrl, vol3]
-    pub registers: [u16; 8],
+    pub(crate) registers: [u16; 8],
     latch: u8,
 
     // Integer counters (one per channel, count down from register value)
@@ -32,9 +32,8 @@ pub struct Psg {
     clock_step: f64, // = psg_internal_clock / sample_rate (how many PSG ticks per output sample)
 
     // Stereo Panning (Game Gear only - Port 0x06)
-    pub stereo: u8,
-    pub is_gg: bool,
-    pub sample_rate: f32,
+    pub(crate) stereo: u8,
+    pub(crate) is_gg: bool,
 }
 
 impl Default for Psg {
@@ -44,7 +43,7 @@ impl Default for Psg {
 }
 
 impl Psg {
-    pub fn new(is_gg: bool, sample_rate: f32) -> Self {
+    pub(crate) fn new(is_gg: bool, sample_rate: f32) -> Self {
         let master_clock: f64 = 3579545.0;
         let psg_clock = master_clock / 16.0;
 
@@ -63,11 +62,10 @@ impl Psg {
             clock_step: psg_clock / sample_rate as f64,
             stereo: 0xFF,
             is_gg,
-            sample_rate,
         }
     }
 
-    pub fn get_state(&self) -> crate::savestate::PsgState {
+    pub(crate) fn get_state(&self) -> crate::savestate::PsgState {
         crate::savestate::PsgState {
             registers:  self.registers,
             latch:      self.latch,
@@ -79,7 +77,7 @@ impl Psg {
         }
     }
 
-    pub fn load_state(&mut self, s: &crate::savestate::PsgState) {
+    pub(crate) fn load_state(&mut self, s: &crate::savestate::PsgState) {
         self.registers  = s.registers;
         self.latch      = s.latch;
         self.counters   = s.counters;
@@ -89,7 +87,7 @@ impl Psg {
         self.stereo     = s.stereo;
     }
 
-    pub fn write_data(&mut self, value: u8) {
+    pub(crate) fn write_data(&mut self, value: u8) {
         if value & 0x80 != 0 {
             // Latch/Data byte (1ccctdddd)
             self.latch = (value >> 4) & 0x07;
@@ -123,7 +121,7 @@ impl Psg {
         }
     }
 
-    pub fn write_stereo(&mut self, value: u8) {
+    pub(crate) fn write_stereo(&mut self, value: u8) {
         if self.is_gg {
             self.stereo = value;
         }
@@ -186,7 +184,7 @@ impl Psg {
         }
     }
 
-    pub fn generate_sample(&mut self) -> (f32, f32) {
+    pub(crate) fn generate_sample(&mut self) -> (f32, f32) {
         // Run PSG ticks to catch up to this output sample
         self.clock_frac += self.clock_step;
         let ticks = self.clock_frac as u32;

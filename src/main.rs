@@ -2,10 +2,10 @@
 
 mod audio;
 mod bus;
-pub mod platform;
-pub mod core;
+mod platform;
+mod core;
 mod eeprom;
-pub mod frontend;
+mod frontend;
 mod savestate;
 mod joypad;
 mod mmu;

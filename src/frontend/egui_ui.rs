@@ -19,7 +19,7 @@ impl EguiState {
         let ctx = Context::default();
         let viewport_id = egui::ViewportId::default();
         let winit_state = WinitState::new(ctx.clone(), viewport_id, window, None, None, None);
-        let painter = Painter::new(gl, "", None, false).unwrap();
+        let painter = Painter::new(gl, "", None, false).expect("Failed to create egui painter");
         Self { ctx, winit_state, painter }
     }
 

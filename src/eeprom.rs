@@ -26,11 +26,11 @@ enum State {
     Writing,
 }
 
-pub struct Eeprom93C46 {
+pub(crate) struct Eeprom93C46 {
     /// 128 bytes = 64 palavras × 16 bits (armazenamento persistido no .eep)
-    pub data: [u8; 128],
+    pub(crate) data: [u8; 128],
     /// true quando data foi modificado desde o último save
-    pub dirty: bool,
+    pub(crate) dirty: bool,
 
     // Estado das linhas na última escrita
     cs_prev: bool,
@@ -53,7 +53,7 @@ pub struct Eeprom93C46 {
 }
 
 impl Eeprom93C46 {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             data: [0xFF; 128], // EEPROM apagada = 0xFF
             dirty: false,
@@ -73,7 +73,7 @@ impl Eeprom93C46 {
 
     /// Processa uma escrita no registrador de controle serial ($8000).
     /// bits: 0=DI, 1=CLK, 2=CS
-    pub fn write_control(&mut self, value: u8) {
+    pub(crate) fn write_control(&mut self, value: u8) {
         let cs  = (value & 0x04) != 0;
         let clk = (value & 0x02) != 0;
         let di  = (value & 0x01) != 0;
@@ -93,17 +93,17 @@ impl Eeprom93C46 {
     }
 
     /// Lê o estado do DO ($8000, bit 3).
-    pub fn read_control(&self) -> u8 {
+    pub(crate) fn read_control(&self) -> u8 {
         if self.out_bit { 0x08 } else { 0x00 }
     }
 
     /// Leitura direta de byte ($8008–$8087): offset = addr - $8008.
-    pub fn direct_read(&self, offset: u8) -> u8 {
+    pub(crate) fn direct_read(&self, offset: u8) -> u8 {
         self.data[offset as usize]
     }
 
     /// Escrita direta de byte ($8008–$8087): offset = addr - $8008.
-    pub fn direct_write(&mut self, offset: u8, value: u8) {
+    pub(crate) fn direct_write(&mut self, offset: u8, value: u8) {
         self.data[offset as usize] = value;
         self.dirty = true;
     }

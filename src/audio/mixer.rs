@@ -1,20 +1,20 @@
 use super::psg::Psg;
 use super::fm::Fm;
 
-pub struct AudioMixer {
-    pub psg: Psg,
-    pub fm: Fm,
+pub(crate) struct AudioMixer {
+    pub(crate) psg: Psg,
+    pub(crate) fm: Fm,
 }
 
 impl AudioMixer {
-    pub fn new(is_gg: bool, sample_rate: f32) -> Self {
+    pub(crate) fn new(is_gg: bool, sample_rate: f32) -> Self {
         Self {
             psg: Psg::new(is_gg, sample_rate),
             fm: Fm::new(),
         }
     }
 
-    pub fn generate_sample(&mut self) -> (f32, f32) {
+    pub(crate) fn generate_sample(&mut self) -> (f32, f32) {
         let (psg_l, psg_r) = self.psg.generate_sample();
         let fm_raw = self.fm.generate_sample();
 

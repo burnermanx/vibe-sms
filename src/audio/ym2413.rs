@@ -186,7 +186,7 @@ fn lookup_exp_table(i: u16) -> i16 {
     val << 1
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct Patch {
     tl: u32, fb: u32, eg: u32, ml: u32, ar: u32,
     dr: u32, sl: u32, rr: u32, kr: u32, kl: u32,
@@ -223,7 +223,7 @@ struct Slot {
     update_requests: u32,
 }
 
-pub struct RateConv {
+pub(crate) struct RateConv {
     timer: f64,
     f_ratio: f64,
     buf: [i16; LW],
@@ -293,7 +293,7 @@ impl RateConv {
     }
 }
 
-pub struct Ym2413 {
+pub(crate) struct Ym2413 {
     out_time: f64,
     out_step: f64,
     inp_step: f64,
@@ -1095,8 +1095,8 @@ impl Ym2413 {
 
     fn set_patch(&mut self, ch: usize, num: usize) {
         self.patch_number[ch] = num as i32;
-        self.slot[ch * 2].patch = self.patch[num * 2].clone();
-        self.slot[ch * 2 + 1].patch = self.patch[num * 2 + 1].clone();
+        self.slot[ch * 2].patch = self.patch[num * 2];
+        self.slot[ch * 2 + 1].patch = self.patch[num * 2 + 1];
         self.slot[ch * 2].update_requests |= UPDATE_ALL;
         self.slot[ch * 2 + 1].update_requests |= UPDATE_ALL;
     }

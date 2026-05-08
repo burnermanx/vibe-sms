@@ -29,26 +29,26 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-pub struct Mmu {
-    pub ram: [u8; 8192],       // 8KB Work RAM ($C000–$DFFF) — SG/SC only uses 1–2KB
-    pub rom: Vec<u8>,          // O Cartucho de Jogo
-    pub cart_ram: [u8; 16384], // Até 16KB de RAM no Cartucho (SRAM) — SMS/GG only
-    pub sram_dirty: bool,
+pub(crate) struct Mmu {
+    pub(crate) ram: [u8; 8192],       // 8KB Work RAM ($C000–$DFFF) — SG/SC only uses 1–2KB
+    pub(crate) rom: Vec<u8>,          // O Cartucho de Jogo
+    pub(crate) cart_ram: [u8; 16384], // Até 16KB de RAM no Cartucho (SRAM) — SMS/GG only
+    pub(crate) sram_dirty: bool,
 
     // EEPROM 93C46 (apenas para jogos GG que a utilizam)
-    pub eeprom: Option<Eeprom93C46>,
+    pub(crate) eeprom: Option<Eeprom93C46>,
 
     // Registradores do Sega Mapper (SMS/GG only — unused for SG/SC)
-    pub ram_control: u8,    // $FFFC
-    pub rom_bank_0: usize,  // $FFFD
-    pub rom_bank_1: usize,  // $FFFE
-    pub rom_bank_2: usize,  // $FFFF
+    pub(crate) ram_control: u8,    // $FFFC
+    pub(crate) rom_bank_0: usize,  // $FFFD
+    pub(crate) rom_bank_1: usize,  // $FFFE
+    pub(crate) rom_bank_2: usize,  // $FFFF
 
-    pub platform: Platform,
+    pub(crate) platform: Platform,
 }
 
 impl Mmu {
-    pub fn new(mut rom: Vec<u8>, platform: Platform) -> Self {
+    pub(crate) fn new(mut rom: Vec<u8>, platform: Platform) -> Self {
         // EEPROM detection: only for Game Gear
         let eeprom = if platform.is_gg() {
             let rom_crc = crc32(&rom);
@@ -82,7 +82,7 @@ impl Mmu {
         }
     }
 
-    pub fn read(&self, addr: u16) -> u8 {
+    pub(crate) fn read(&self, addr: u16) -> u8 {
         // SG-1000/SC-3000: flat ROM
         if self.platform.is_sg_family() {
             return match addr {
@@ -147,7 +147,7 @@ impl Mmu {
         }
     }
 
-    pub fn write(&mut self, addr: u16, value: u8) {
+    pub(crate) fn write(&mut self, addr: u16, value: u8) {
         // SG-1000/SC-3000: flat RAM
         if self.platform.is_sg_family() {
             if addr >= 0xC000 {

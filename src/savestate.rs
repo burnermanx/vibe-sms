@@ -9,69 +9,69 @@
 const MAGIC: &[u8; 4] = b"VSMS";
 const VERSION: u8 = 2;
 
-pub struct CpuState {
-    pub af: u16, pub bc: u16, pub de: u16, pub hl: u16,
-    pub af_alt: u16, pub bc_alt: u16, pub de_alt: u16, pub hl_alt: u16,
-    pub pc: u16, pub sp: u16, pub ix: u16, pub iy: u16, pub mem_ptr: u16,
-    pub i: u8, pub r: u8,
-    pub iff1: bool, pub iff2: bool, pub halted: bool,
-    pub interrupt_mode: u8, pub iff_delay: u8,
-    pub irq_pending: u8, pub nmi_pending: u8, pub irq_data: u8,
+pub(crate) struct CpuState {
+    pub(crate) af: u16, pub bc: u16, pub de: u16, pub hl: u16,
+    pub(crate) af_alt: u16, pub bc_alt: u16, pub de_alt: u16, pub hl_alt: u16,
+    pub(crate) pc: u16, pub sp: u16, pub ix: u16, pub iy: u16, pub mem_ptr: u16,
+    pub(crate) i: u8, pub r: u8,
+    pub(crate) iff1: bool, pub iff2: bool, pub halted: bool,
+    pub(crate) interrupt_mode: u8, pub iff_delay: u8,
+    pub(crate) irq_pending: u8, pub nmi_pending: u8, pub irq_data: u8,
 }
 
-pub struct MmuState {
-    pub ram: [u8; 8192],
-    pub cart_ram: [u8; 16384],
-    pub ram_control: u8,
-    pub rom_bank_0: usize,
-    pub rom_bank_1: usize,
-    pub rom_bank_2: usize,
+pub(crate) struct MmuState {
+    pub(crate) ram: [u8; 8192],
+    pub(crate) cart_ram: [u8; 16384],
+    pub(crate) ram_control: u8,
+    pub(crate) rom_bank_0: usize,
+    pub(crate) rom_bank_1: usize,
+    pub(crate) rom_bank_2: usize,
 }
 
-pub struct VdpState {
-    pub vram: [u8; 16384],
-    pub cram: [u8; 64],
-    pub registers: [u8; 16],
-    pub control_word: u16,
-    pub first_byte_received: bool,
-    pub mode: u8,          // 0=VramRead, 1=VramWrite, 2=CramWrite
-    pub address_register: u16,
-    pub read_buffer: u8,
-    pub vblank_flag: bool,
-    pub line_interrupt_flag: bool,
-    pub sprite_collision: bool,
-    pub sprite_overflow: bool,
-    pub v_counter: u8,
-    pub h_counter: u8,
-    pub h_latched: bool,
-    pub latched_h_counter: u8,
-    pub latched_v_counter: u8,
-    pub cram_latch: u8,
+pub(crate) struct VdpState {
+    pub(crate) vram: [u8; 16384],
+    pub(crate) cram: [u8; 64],
+    pub(crate) registers: [u8; 16],
+    pub(crate) control_word: u16,
+    pub(crate) first_byte_received: bool,
+    pub(crate) mode: u8,          // 0=VramRead, 1=VramWrite, 2=CramWrite
+    pub(crate) address_register: u16,
+    pub(crate) read_buffer: u8,
+    pub(crate) vblank_flag: bool,
+    pub(crate) line_interrupt_flag: bool,
+    pub(crate) sprite_collision: bool,
+    pub(crate) sprite_overflow: bool,
+    pub(crate) v_counter: u8,
+    pub(crate) h_counter: u8,
+    pub(crate) h_latched: bool,
+    pub(crate) latched_h_counter: u8,
+    pub(crate) latched_v_counter: u8,
+    pub(crate) cram_latch: u8,
 }
 
-pub struct PsgState {
-    pub registers: [u16; 8],
-    pub latch: u8,
-    pub counters: [u16; 4],
-    pub polarity: [i8; 4],
-    pub noise_lfsr: u16,
-    pub clock_frac: f64,
-    pub stereo: u8,
+pub(crate) struct PsgState {
+    pub(crate) registers: [u16; 8],
+    pub(crate) latch: u8,
+    pub(crate) counters: [u16; 4],
+    pub(crate) polarity: [i8; 4],
+    pub(crate) noise_lfsr: u16,
+    pub(crate) clock_frac: f64,
+    pub(crate) stereo: u8,
 }
 
-pub struct EmuTimingState {
-    pub vcounter: u16,
-    pub cycles_accumulator: i32,
-    pub line_interrupt_counter: u8,
-    pub frame_cycles: u32,
+pub(crate) struct EmuTimingState {
+    pub(crate) vcounter: u16,
+    pub(crate) cycles_accumulator: i32,
+    pub(crate) line_interrupt_counter: u8,
+    pub(crate) frame_cycles: u32,
 }
 
-pub struct SaveState {
-    pub cpu:    CpuState,
-    pub mmu:    MmuState,
-    pub vdp:    VdpState,
-    pub psg:    PsgState,
-    pub timing: EmuTimingState,
+pub(crate) struct SaveState {
+    pub(crate) cpu:    CpuState,
+    pub(crate) mmu:    MmuState,
+    pub(crate) vdp:    VdpState,
+    pub(crate) psg:    PsgState,
+    pub(crate) timing: EmuTimingState,
 }
 
 struct Ser(Vec<u8>);
@@ -131,7 +131,7 @@ impl<'a> De<'a> {
 }
 
 impl SaveState {
-    pub fn serialize(&self) -> Vec<u8> {
+    pub(crate) fn serialize(&self) -> Vec<u8> {
         let mut s = Ser::new();
 
         s.bytes(MAGIC);
@@ -193,7 +193,7 @@ impl SaveState {
         s.0
     }
 
-    pub fn deserialize(data: &[u8]) -> Option<Self> {
+    pub(crate) fn deserialize(data: &[u8]) -> Option<Self> {
         let mut d = De::new(data);
 
         // Header
